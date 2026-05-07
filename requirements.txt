@@ -1,0 +1,20 @@
+# GenSRT — CUDA 12.8 extras
+# ⚠️  Install THIS FILE FIRST, before requirements.txt:
+#
+--index-url https://download.pytorch.org/whl/cu128
+torch==2.10.0
+
+# GenSRT — base runtime dependencies
+# Install CUDA extras separately:
+#   pip install -r requirements-cuda.txt
+
+faster-whisper>=1.0.3
+requests>=2.31.0
+transformers>=4.40.0
+accelerate>=0.30.0
+ffmpeg-python>=0.2.0
+srt>=3.5.3
+flask>=3.0.0
+pywebview==5.2
+tqdm>=4.65.0
+rich>=13.0.0

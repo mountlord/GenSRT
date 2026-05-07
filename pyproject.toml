@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gensrt"
+version = "0.1.0"
+description = "GPU-accelerated subtitle (SRT) generation using Whisper"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "GenSRT" }]
+
+dependencies = [
+    "faster-whisper>=1.0.3",
+    "silero-vad>=5.1",
+    "googletrans==4.0.0rc1",
+    "transformers>=4.40.0",
+    "accelerate>=0.30.0",
+    "ffmpeg-python>=0.2.0",
+    "srt>=3.5.3",
+    "flask>=3.0.0",
+    "pywebview==5.2",
+    "tqdm>=4.65.0",
+    "rich>=13.0.0",
+]
+
+[project.scripts]
+gensrt = "gensrt.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["gensrt*"]
+
+[tool.setuptools.package-data]
+gensrt = ["static/*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.mypy]
+python_version = "3.10"
+strict = false
+ignore_missing_imports = true
