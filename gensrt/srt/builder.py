@@ -57,7 +57,7 @@ def _wrap_text(text: str) -> str:
     return "\n".join(lines[:_MAX_LINES])
 
 
-def build_srt(segments: list[SRTSegment], max_duration_s: float = 0.0) -> list:
+def build_srt(segments: list[SRTSegment], max_duration_s: float = 0.0, min_duration_s: float = 0.0) -> list:
     """Convert :class:`SRTSegment` objects to ``srt.Subtitle`` objects.
 
     Args:
@@ -65,6 +65,8 @@ def build_srt(segments: list[SRTSegment], max_duration_s: float = 0.0) -> list:
         max_duration_s: If > 0, cap each subtitle's display duration to this
                         many seconds.  Fixes subtitles that hang on screen for
                         minutes when Whisper assigns a very long end timestamp.
+        min_duration_s: If > 0, ensure each subtitle displays for at least this
+                        many seconds.  Fixes subtitles that disappear too fast.
 
     Returns:
         List of ``srt.Subtitle`` objects ready for serialisation.
@@ -100,6 +102,19 @@ def build_srt(segments: list[SRTSegment], max_duration_s: float = 0.0) -> list:
                     (end - start).total_seconds(),
                 )
                 end = max_end
+
+        # Floor minimum display duration
+        if min_duration_s > 0:
+            min_end = start + datetime.timedelta(seconds=min_duration_s)
+            if end < min_end:
+                logger.debug(
+                    "Flooring subtitle %d: %.1fs → %.1fs (was %.1fs)",
+                    seg.index,
+                    seg.start,
+                    seg.start + min_duration_s,
+                    (end - start).total_seconds(),
+                )
+                end = min_end
 
         content = _wrap_text(seg.text)
         subtitles.append(srt.Subtitle(index=seg.index, start=start, end=end, content=content))

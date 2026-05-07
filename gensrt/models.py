@@ -104,6 +104,7 @@ class TranscriptionConfig:
 
     # SRT output
     max_subtitle_duration_s: float = 10.0   # cap subtitle display time; 0 = no cap
+    min_subtitle_duration_s: float = 1.0    # floor subtitle display time; 0 = no floor
 
     # Translation
     translation_engine: str = "google"

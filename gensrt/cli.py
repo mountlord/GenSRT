@@ -203,6 +203,15 @@ def _build_parser() -> argparse.ArgumentParser:
         help=f"Cap maximum subtitle display time in seconds (default: {bd['max_subtitle_duration_s']}). "
              "Set to 0 to disable. Fixes subtitles that hang on screen for minutes.",
     )
+    srt_grp.add_argument(
+        "--min-subtitle-duration",
+        dest="min_subtitle_duration_s",
+        type=float,
+        default=None,
+        metavar="SEC",
+        help=f"Floor minimum subtitle display time in seconds (default: {bd['min_subtitle_duration_s']}). "
+             "Set to 0 to disable. Fixes subtitles that disappear too fast.",
+    )
 
     # ── Configuration ─────────────────────────────────────────────────────
     cfg = parser.add_argument_group("configuration")

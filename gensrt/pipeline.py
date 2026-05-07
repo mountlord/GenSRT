@@ -127,7 +127,7 @@ def run_pipeline(
         progress(4, 4)
 
         from gensrt.srt.builder import build_srt, write_srt
-        subtitles = build_srt(srt_segments, max_duration_s=config.max_subtitle_duration_s)
+        subtitles = build_srt(srt_segments, max_duration_s=config.max_subtitle_duration_s, min_duration_s=config.min_subtitle_duration_s)
         write_srt(subtitles, output_path)
 
     finally:

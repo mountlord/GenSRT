@@ -9,8 +9,12 @@
   "gpu_id": 0,
   "source_language": "auto",
   "vad_enabled": true,
+  "vad_threshold": 0.5,
+  "vad_min_speech_ms": 250,
+  "vad_min_silence_ms": 2000,
+  "max_subtitle_duration_s": 3.0,
+  "min_subtitle_duration_s": 1.0,
   "translation_engine": "google",
   "translate": true,
-  "backend": "cuda",
-  "max_subtitle_duration_s": 10.0
+  "backend": "cuda"
 }
