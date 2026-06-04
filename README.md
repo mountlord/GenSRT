@@ -62,14 +62,14 @@ This happens when Whisper assigns a long end timestamp to a segment — common
 in content with long pauses or music between dialogue.
 
 ```powershell
---max-subtitle-duration SEC   # Default: 10.0  |  0 = no cap
+--max-subtitle-duration SEC   # Default: 3.0  |  0 = no cap
 ```
 
 | Value | Effect |
 |---|---|
-| `10.0` (default) | No subtitle stays on screen longer than 10 seconds |
-| `5.0` | Tighter cap — good for fast dialogue |
-| `15.0` | Looser cap — good for slow/deliberate speech |
+| `3.0` (default) | Tight cap — good for fast dialogue, prevents subtitles from hanging |
+| `5.0` | Moderate cap |
+| `10.0` | Looser cap — good for slow/deliberate speech |
 | `0` | Disabled — use Whisper's raw timestamps |
 
 ```powershell
@@ -95,6 +95,7 @@ Raise the threshold.
 --vad-threshold FLOAT          # Default: 0.50  |  Range: 0.0–1.0
 --vad-min-speech-ms MS         # Default: 250
 --vad-min-silence-ms MS        # Default: 2000
+--vad-speech-pad-ms MS         # Default: 200  (faster-whisper library default: 400)
 ```
 
 #### `--vad-threshold`
@@ -146,6 +147,28 @@ gensrt --input video.mkv --vad-min-silence-ms 500
 
 # Lots of missing speech — reduce the silence requirement
 gensrt --input video.mkv --vad-min-silence-ms 1000
+```
+
+#### `--vad-speech-pad-ms`
+Padding (in milliseconds) that faster-whisper's VAD adds before and after each
+detected speech region. This **directly shifts subtitle start timestamps**:
+higher padding = subtitle appears earlier on screen than the speaker starts.
+
+The faster-whisper library default is `400` ms, which causes subtitles to appear
+visibly before the speaker. GenSRT ships a tighter `200` ms default.
+
+| Value | Effect |
+|---|---|
+| `100` | Tightest alignment — minor risk of clipping the first syllable |
+| `200` | Default — balanced |
+| `400` | faster-whisper library default — subtitles appear noticeably early |
+
+```powershell
+# Subtitles still appear too early — tighten further
+gensrt --input video.mkv --vad-speech-pad-ms 100
+
+# First syllable gets clipped — loosen
+gensrt --input video.mkv --vad-speech-pad-ms 300
 ```
 
 ---
@@ -283,7 +306,7 @@ Subsequent runs use the cached weights and start immediately.
 
 ```powershell
 # From the project root with venv activated
-.\packager.ps1
+.\Pack-gensrt.ps1
 ```
 
 Output: `.\dist\gensrt\gensrt.exe`

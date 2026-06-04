@@ -1,7 +1,7 @@
 """Audio extraction using ffmpeg-python.
 
 Converts any FFmpeg-supported input to a 16 kHz mono WAV temporary file
-suitable for faster-whisper / Silero VAD.
+suitable for faster-whisper (which runs its own VAD internally).
 
 Usage::
 

@@ -191,6 +191,16 @@ def _build_parser() -> argparse.ArgumentParser:
         help=f"Minimum silence gap that splits segments in ms (default: {bd['vad_min_silence_ms']}). "
              "Lower = more splits, shorter segments.",
     )
+    vad.add_argument(
+        "--vad-speech-pad-ms",
+        dest="vad_speech_pad_ms",
+        type=int,
+        default=None,
+        metavar="MS",
+        help=f"Padding added before/after detected speech in ms (default: {bd['vad_speech_pad_ms']}; "
+             "faster-whisper library default is 400). Lower = subtitles align closer to actual "
+             "speech onset; higher = safer against clipping the first syllable.",
+    )
 
     # ── SRT output ────────────────────────────────────────────────────────
     srt_grp = parser.add_argument_group("srt output")

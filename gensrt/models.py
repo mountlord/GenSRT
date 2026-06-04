@@ -101,9 +101,10 @@ class TranscriptionConfig:
     vad_threshold: float = 0.5          # speech probability threshold (0–1)
     vad_min_speech_ms: int = 250        # minimum speech segment duration
     vad_min_silence_ms: int = 2000      # minimum silence gap that splits segments
+    vad_speech_pad_ms: int = 200        # padding before/after detected speech (faster-whisper default: 400)
 
     # SRT output
-    max_subtitle_duration_s: float = 10.0   # cap subtitle display time; 0 = no cap
+    max_subtitle_duration_s: float = 3.0    # cap subtitle display time; 0 = no cap
     min_subtitle_duration_s: float = 1.0    # floor subtitle display time; 0 = no floor
 
     # Translation

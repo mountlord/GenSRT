@@ -27,7 +27,7 @@ from gensrt.operations import (
     resolve_output_path,
     run_transcription,
 )
-from gensrt.constants import SERVER_HOST, SERVER_PORT_RANGE
+from gensrt.constants import PIPELINE_PHASES, SERVER_HOST, SERVER_PORT_RANGE
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +68,7 @@ def _begin_long_operation(filename: str) -> None:
             "updated_at": now,
             "message": "Starting…",
             "current": 0,
-            "total": 4,
+            "total": PIPELINE_PHASES,
             "percent": 0.0,
         }
 
@@ -244,8 +244,8 @@ def api_transcribe():
             )
             _update_active_operation(
                 message=f"Complete — {output_path.name}",
-                current=4,
-                total=4,
+                current=PIPELINE_PHASES,
+                total=PIPELINE_PHASES,
             )
         except Exception as exc:
             logger.exception("Transcription failed: %s", exc)

@@ -1,7 +1,7 @@
 # GenSRT Packaging Script
 # Builds a standalone executable package with PyInstaller
 # Run from the GenSRT project root with the venv activated:
-#   .\packager.ps1
+#   .\Pack-gensrt.ps1
 
 Write-Host ""
 Write-Host "========================================" -ForegroundColor Cyan

@@ -17,6 +17,7 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
+from gensrt.constants import PIPELINE_PHASES
 from gensrt.models import SRTSegment, TranscriptionConfig, TranscriptionResult
 
 logger = logging.getLogger(__name__)
@@ -78,21 +79,17 @@ def run_pipeline(
     try:
         # ── Phase 1: Audio extraction ─────────────────────────────────────
         status("Extracting audio…")
-        progress(0, 4)
+        progress(0, PIPELINE_PHASES)
 
         from gensrt.audio.extractor import extract_audio
         wav_path = extract_audio(input_path)
 
-        # ── Phase 2: VAD (handled inside faster-whisper on GPU) ──────────
+        # ── Phase 2: Transcription (VAD runs inside faster-whisper) ───────
         if config.vad_enabled:
             status("Transcribing with VAD…")
         else:
             status("Transcribing…")
-        progress(1, 4)
-
-        # ── Phase 3: Transcription ────────────────────────────────────────
-        status("Transcribing…")
-        progress(2, 4)
+        progress(1, PIPELINE_PHASES)
 
         raw_segments, detected_language = _run_whisper(
             wav_path=wav_path,
@@ -101,7 +98,7 @@ def run_pipeline(
 
         logger.info("Detected language: %s", detected_language)
 
-        # ── Phase 4: Translation ──────────────────────────────────────────
+        # ── Phase 3: Translation ──────────────────────────────────────────
         should_translate = (
             config.translate
             and config.translation_engine != "none"
@@ -113,7 +110,7 @@ def run_pipeline(
                 f"Translating ({detected_language} → en) "
                 f"via {config.translation_engine}…"
             )
-        progress(3, 4)
+        progress(2, PIPELINE_PHASES)
 
         srt_segments = _build_segments(
             raw_segments=raw_segments,
@@ -122,13 +119,16 @@ def run_pipeline(
             should_translate=should_translate,
         )
 
-        # ── Phase 5: Write SRT ────────────────────────────────────────────
+        # ── Phase 4: Write SRT ────────────────────────────────────────────
         status("Writing SRT…")
-        progress(4, 4)
+        progress(3, PIPELINE_PHASES)
 
         from gensrt.srt.builder import build_srt, write_srt
         subtitles = build_srt(srt_segments, max_duration_s=config.max_subtitle_duration_s, min_duration_s=config.min_subtitle_duration_s)
         write_srt(subtitles, output_path)
+
+        # Done — bar to 100%
+        progress(PIPELINE_PHASES, PIPELINE_PHASES)
 
     finally:
         # Always clean up the temp WAV
@@ -179,14 +179,6 @@ def _run_whisper(
     device = config.device
     compute_type = config.compute_type
 
-    if device == "cuda":
-        from gensrt.gpu_probe import GPUBackend, backend_to_ct2_device
-        try:
-            backend = GPUBackend[config.backend.upper()]
-        except KeyError:
-            backend = GPUBackend.CPU
-        device, compute_type = backend_to_ct2_device(backend)
-
     logger.info(
         "Loading Whisper model: %s  (device=%s, compute=%s)",
         config.model, device, compute_type,
@@ -231,10 +223,12 @@ def _run_whisper(
             "threshold": config.vad_threshold,
             "min_speech_duration_ms": config.vad_min_speech_ms,
             "min_silence_duration_ms": config.vad_min_silence_ms,
+            "speech_pad_ms": config.vad_speech_pad_ms,
         }
         logger.info(
-            "VAD enabled (threshold=%.2f, min_speech=%dms, min_silence=%dms)",
+            "VAD enabled (threshold=%.2f, min_speech=%dms, min_silence=%dms, speech_pad=%dms)",
             config.vad_threshold, config.vad_min_speech_ms, config.vad_min_silence_ms,
+            config.vad_speech_pad_ms,
         )
     else:
         logger.info("VAD disabled — full audio passed to Whisper.")

@@ -1,0 +1,15 @@
+# GenSRT — CUDA-specific PyTorch build.
+#
+# Install BEFORE requirements.txt so pip resolves the GPU build of torch
+# instead of pulling the CPU wheel from PyPI:
+#
+#   pip install -r requirements-cuda.txt
+#   pip install -r requirements.txt
+#   pip install -e .
+#
+# Targets NVIDIA GPUs with CUDA 12.8.  Note: PyTorch 2.12+ has deprecated
+# cu128 in favor of cu130, so a future torch bump will need to update the
+# index URL below.
+
+--index-url https://download.pytorch.org/whl/cu128
+torch==2.10.0

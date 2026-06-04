@@ -1,11 +1,11 @@
-# GenSRT — CUDA 12.8 extras
-# ⚠️  Install THIS FILE FIRST, before requirements.txt:
+# GenSRT — base runtime dependencies.
 #
-# torch==2.10.0 --index-url https://download.pytorch.org/whl/cu128
-
-# GenSRT — base runtime dependencies
-# Install CUDA extras separately:
+# CUDA-specific PyTorch lives in requirements-cuda.txt and must be installed
+# FIRST so pip doesn't pull the CPU build of torch from PyPI:
+#
 #   pip install -r requirements-cuda.txt
+#   pip install -r requirements.txt
+#   pip install -e .
 
 faster-whisper>=1.0.3
 requests>=2.31.0

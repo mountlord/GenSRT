@@ -79,6 +79,15 @@ AUDIO_FORMAT: str = "wav"
 DEFAULT_GPU_ID: int = 0
 
 # ---------------------------------------------------------------------------
+# Pipeline
+# ---------------------------------------------------------------------------
+# Number of real phases reported by run_pipeline(): extract → transcribe →
+# translate → write.  Used as the denominator for progress(current, total)
+# callbacks.  Both pipeline.py and server.py import this so the value cannot
+# drift between them.
+PIPELINE_PHASES: int = 4
+
+# ---------------------------------------------------------------------------
 # Server
 # ---------------------------------------------------------------------------
 SERVER_HOST: str = "127.0.0.1"
