@@ -13,7 +13,7 @@ transformers>=4.40.0
 accelerate>=0.30.0
 ffmpeg-python>=0.2.0
 srt>=3.5.3
-flask
-pywebview
-tqdm
+flask>=3.1.3
+pywebview>=5.3
+tqdm>=4.65.0
 rich>=13.0.0

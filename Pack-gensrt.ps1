@@ -54,6 +54,7 @@ Write-Host ""
 pyinstaller --noconfirm --clean --onedir --name gensrt `
     `
     --add-data "gensrt\static;gensrt\static" `
+    --add-data "gensrt\templates;gensrt\templates" `
     `
     --hidden-import=flask `
     --hidden-import=flask.json `

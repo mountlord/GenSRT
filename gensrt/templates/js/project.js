@@ -64,10 +64,51 @@ window.gensrtLoadSrtFromPath = loadSrtFromPath;
 // ── Browser-mode file drop (loadJSON's slot in player.js) ─
 //
 // Player.js (off-limits) calls window-side `loadJSON` from its file-picker
-// change handler.  We keep the function name but make it parse SRT
-// content via a server round-trip — the same parsing path as drag-drop
-// in pywebview mode, so the SRT package handles all edge cases uniformly.
+// change handler.  We keep the function name but:
+//
+//   • In pywebview mode, the File object exposes its absolute path via
+//     ``file.pywebviewFullPath``.  We route through the server (/api/srt),
+//     which also returns any sibling video path.  If a sibling video is
+//     present and different from what's currently loaded, we set it via
+//     window.tilesterSetVideoFromPath — the sidecar hook then re-applies
+//     this SRT.  (The minor cost of loading the SRT twice is the price of
+//     a single straight-through code path; user-initiated file pick is
+//     rare enough that the extra round-trip is fine.)
+//
+//   • In browser mode, ``pywebviewFullPath`` is undefined and we have no
+//     way to ask the server about the file's location.  Fall back to the
+//     client-side parse that's been there since Drop H.
 function loadJSON(file) {
+  const fullPath = file && file.pywebviewFullPath;
+  if (fullPath) {
+    // pywebview path-aware load — uses /api/srt and picks up any sibling video.
+    (async () => {
+      try {
+        const resp = await fetch(`/api/srt?path=${encodeURIComponent(fullPath)}`);
+        if (!resp.ok) {
+          const j = await resp.json().catch(() => ({}));
+          showErrorDialog('SRT Load Failed', j.error || `HTTP ${resp.status}`);
+          return;
+        }
+        const data = await resp.json();
+        _applySrtPayload(data, fullPath);
+        // Chain to sibling video if found and not already loaded.
+        if (data.sibling_video) {
+          const currentVideo = (videoPathInput && videoPathInput.value || '').trim();
+          if (data.sibling_video !== currentVideo) {
+            window.tilesterSetVideoFromPath(data.sibling_video);
+          }
+        }
+      } catch (err) {
+        console.error('loadJSON (pywebview path mode) failed:', err);
+        showErrorDialog('SRT Load Failed', err.message || String(err));
+      }
+    })();
+    return;
+  }
+
+  // Browser-mode fallback — naive client-side parse, no sibling-video
+  // discovery (no path to ask the server about).
   const reader = new FileReader();
   reader.onload = async (e) => {
     try {
@@ -147,6 +188,28 @@ function loadJSON(file) {
 
 // (legacy export name retained for symmetry with the old code path)
 window.tilesterApplyLinksJson = function () { /* no-op — Drop H replaces JSON model */ };
+
+// ── Modal keystroke isolation ─────────────────────────────
+//
+// While any modal is open the user needs to type freely in its text fields
+// without firing the page's global keyboard shortcuts (Space → play/pause,
+// arrow keys → seek, F → fullscreen, etc.).  Those global handlers live in
+// off-limits files (init.js / ui.js / player.js) and listen at the document
+// level, so we can't modify them directly.  Instead we attach a bubble-phase
+// listener to each modal that stops keydown events from propagating past
+// the modal element — they reach the modal's own inputs and buttons, then
+// stop short of the global handlers.
+//
+// Escape is intentionally exempted so future "Escape closes the modal"
+// behaviour (if added at the document level) keeps working.
+(function installModalKeystrokeIsolation() {
+  document.querySelectorAll('.modal-overlay').forEach((modal) => {
+    modal.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') return;
+      e.stopPropagation();
+    });
+  });
+})();
 
 // ── Build Project for Save ────────────────────────────────
 function _buildProjectForSave() {

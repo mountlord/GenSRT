@@ -96,7 +96,7 @@ def run_pipeline(
             config=config,
         )
 
-        logger.info("Detected language: %s", detected_language)
+        logger.info("Using language: %s", detected_language)
 
         # ── Phase 3: Translation ──────────────────────────────────────────
         should_translate = (

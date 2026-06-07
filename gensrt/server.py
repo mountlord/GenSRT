@@ -168,6 +168,20 @@ _VIDEO_EXTS: frozenset[str] = frozenset(
 _READABLE_EXTS: frozenset[str] = _VIDEO_EXTS | frozenset({".srt"})
 
 
+def _find_sibling_video(srt_path: Path) -> Path | None:
+    """Return the first sibling video file next to *srt_path*, or None.
+
+    Looks for ``<basename>.{mp4,mkv,ts,...}`` in the same directory.  Used by
+    the drop handler and the GET /api/srt endpoint to keep the SRT-load and
+    video-load UI flows symmetric.
+    """
+    for ext in _VIDEO_EXTS:
+        candidate = srt_path.with_suffix(ext)
+        if candidate.exists() and candidate.is_file():
+            return candidate
+    return None
+
+
 def _validate_readable_path(path_str: str) -> tuple[Path, str | None]:
     """Resolve and validate a caller-supplied absolute path for read-only endpoints.
 
@@ -281,11 +295,37 @@ def api_status():
 
 @app.route("/api/operation_status")
 def api_operation_status():
-    """Poll endpoint for active operation progress."""
+    """Poll endpoint for active operation progress.
+
+    Response shape (matches what the right-pane polling client expects):
+        idle:   {"status": "idle"}
+        active: {"status": "active",
+                 "operation": {"kind": "transcribe",
+                               "message": "...", "current": N, "total": M,
+                               "percent": <0..100>}}
+
+    Percent is derived from current / total — the existing
+    _update_active_operation only tracks the raw counters, so the JSON
+    response is the right place to compute it for the UI.
+    """
     snap = _snapshot_active_operation()
     if snap is None:
-        return jsonify({"active": False})
-    return jsonify({"active": True, **snap})
+        return jsonify({"status": "idle"})
+
+    total   = snap.get("total")   or 0
+    current = snap.get("current") or 0
+    percent = (100.0 * current / total) if total > 0 else 0.0
+
+    return jsonify({
+        "status": "active",
+        "operation": {
+            "kind":    "transcribe",   # only one job type today
+            "message": snap.get("message", "Working..."),
+            "current": current,
+            "total":   total,
+            "percent": percent,
+        },
+    })
 
 
 @app.route("/api/transcribe", methods=["POST"])
@@ -518,7 +558,7 @@ def api_save_config():
       5. Write the merged dict to disk.
 
     Returns:
-      200 ``{status: "ok", saved: {...}, path: "..."}`` on success.
+      200 ``{status: "success", saved: {...}, path: "..."}`` on success.
       400 ``{status: "error", errors: {...}}`` on validation failure.
       400 ``{status: "error", message: "..."}`` on malformed JSON.
       500 ``{status: "error", message: "..."}`` on backup or write failure.
@@ -535,7 +575,7 @@ def api_save_config():
         return jsonify({"status": "error", "errors": errors}), 400
 
     if not sanitized:
-        return jsonify({"status": "ok", "message": "Nothing to save.", "saved": {}})
+        return jsonify({"status": "success", "message": "Nothing to save.", "saved": {}})
 
     with _config_write_lock:
         save_path = _resolve_config_save_path()
@@ -575,7 +615,7 @@ def api_save_config():
             return jsonify({"status": "error", "message": str(exc)}), 500
 
     return jsonify({
-        "status": "ok",
+        "status": "success",
         "message": f"Saved {len(sanitized)} field(s) to {save_path.name}.",
         "saved": sanitized,
         "path": str(save_path),
@@ -584,7 +624,11 @@ def api_save_config():
 
 @app.route("/api/config", methods=["GET"])
 def api_get_config():
-    """Return the current resolved configuration."""
+    """Return the current resolved configuration.
+
+    Response shape:
+        {"status": "success", "config": {<merged defaults + file overrides>}}
+    """
     try:
         file_cfg = read_config_file(default_if_missing=True)
     except Exception as exc:
@@ -592,7 +636,7 @@ def api_get_config():
 
     from gensrt.config import BUILTIN_DEFAULTS
     merged = {**BUILTIN_DEFAULTS, **file_cfg}
-    return jsonify(merged)
+    return jsonify({"status": "success", "config": merged})
 
 
 @app.route("/api/engines")
@@ -602,28 +646,17 @@ def api_engines():
     return jsonify({"engines": available_engines()})
 
 
-# ── Drop C/D/G/H stub endpoints ───────────────────────────────────────────
+# ── Drop history (no stubs remain) ────────────────────────────────────────
 #
-# Stubs that remain after Drop H:
-#   /api/detect          → kept for any tilester legacy callers; never wired in our UI
+# Real endpoints implemented over the course of the drops:
+#   /api/media           — Drop G — serves video bytes with HTTP Range support
+#   /api/video_info      — Drop G — returns ffprobe metadata
+#   /api/srt             — Drop H — read SRT next to video / write segments back
 #
-# Implemented (real) in Drop G:
-#   /api/media           — serves video bytes with HTTP Range support
-#   /api/video_info      — returns ffprobe metadata
-#
-# Implemented (real) in Drop H:
-#   /api/srt             — read SRT next to video / write segments back
-#
-# Removed in Drop D (no longer called by the frontend):
-#   /api/extract, /api/extract_merge
-#
-# Removed in Drop H (no longer called by the frontend):
-#   /api/project/save, /api/project/save_as
-
-@app.route("/api/detect", methods=["POST", "OPTIONS"])
-def api_detect_stub():
-    return jsonify({"status": "stub", "message": "Drop C placeholder."})
-
+# Removed during cleanup:
+#   /api/extract, /api/extract_merge      — Drop D
+#   /api/project/save, /api/project/save_as — Drop H
+#   /api/detect                            — Drop I polish (no callers in new UI)
 
 @app.route("/api/srt", methods=["GET"])
 def api_srt_get():
@@ -688,7 +721,12 @@ def api_srt_get():
         for i, s in enumerate(subs)
     ]
 
-    return jsonify({"path": str(srt_path), "segments": segments})
+    sibling = _find_sibling_video(srt_path)
+    return jsonify({
+        "path":           str(srt_path),
+        "segments":       segments,
+        "sibling_video":  str(sibling) if sibling is not None else None,
+    })
 
 
 @app.route("/api/srt", methods=["POST"])
@@ -942,6 +980,18 @@ def launch_server(
         )
         return
 
+    # pywebview 5.4+ deprecated webview.OPEN_DIALOG / SAVE_DIALOG / FOLDER_DIALOG
+    # in favour of the FileDialog enum.  Resolve the right symbols once so the
+    # Api class can use stable names regardless of the installed version.
+    try:
+        _DLG_OPEN   = webview.FileDialog.OPEN
+        _DLG_SAVE   = webview.FileDialog.SAVE
+        _DLG_FOLDER = webview.FileDialog.FOLDER
+    except AttributeError:
+        _DLG_OPEN   = webview.OPEN_DIALOG    # type: ignore[attr-defined]
+        _DLG_SAVE   = webview.SAVE_DIALOG    # type: ignore[attr-defined]
+        _DLG_FOLDER = webview.FOLDER_DIALOG  # type: ignore[attr-defined]
+
     port = _find_free_port()
     url = f"http://{SERVER_HOST}:{port}/"
 
@@ -975,7 +1025,7 @@ def launch_server(
         def _pwv_pick_one_file(window, file_types: tuple) -> str | None:
             try:
                 result = window.create_file_dialog(
-                    webview.OPEN_DIALOG,
+                    _DLG_OPEN,
                     allow_multiple=False,
                     file_types=file_types,
                 )
@@ -988,7 +1038,7 @@ def launch_server(
         @staticmethod
         def _pwv_folder_dialog_constant():
             try:
-                return webview.FOLDER_DIALOG
+                return _DLG_FOLDER
             except AttributeError:
                 return None
 
@@ -1018,7 +1068,7 @@ def launch_server(
             )
             try:
                 result = self._window.create_file_dialog(
-                    webview.OPEN_DIALOG,
+                    _DLG_OPEN,
                     allow_multiple=False,
                     file_types=file_types,
                 )
@@ -1084,7 +1134,7 @@ def launch_server(
                 kwargs["directory"] = initial_dir
             for call_kwargs in (kwargs, {"file_types": file_types, "save_filename": kwargs["save_filename"]}, {"file_types": file_types}):
                 try:
-                    result = win.create_file_dialog(webview.SAVE_DIALOG, **call_kwargs)
+                    result = win.create_file_dialog(_DLG_SAVE, **call_kwargs)
                     break
                 except TypeError:
                     continue
@@ -1148,9 +1198,20 @@ def launch_server(
             if not paths:
                 return
 
-            video_exts = {".mp4", ".mkv", ".webm", ".avi", ".mov", ".ts", ".m2ts", ".mts", ".m4v"}
-            video_path = next((p for p in paths if Path(p).suffix.lower() in video_exts), None)
+            video_path = next((p for p in paths if Path(p).suffix.lower() in _VIDEO_EXTS), None)
             srt_path   = next((p for p in paths if Path(p).suffix.lower() == ".srt"), None)
+
+            # If user dropped an SRT alone, try to find a sibling video next
+            # to it.  This is the symmetrical counterpart of the sidecar-SRT
+            # auto-discovery that fires when a video is dropped.  When a
+            # sibling video is found, we route through the video-load path —
+            # the sidecar hook in project.js will then re-discover and load
+            # this same SRT, so we don't issue a separate gensrtLoadSrtFromPath.
+            if srt_path and not video_path:
+                sibling = _find_sibling_video(Path(srt_path))
+                if sibling is not None:
+                    video_path = str(sibling)
+                    srt_path = None
 
             if video_path:
                 window.evaluate_js(

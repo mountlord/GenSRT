@@ -32,7 +32,11 @@ where = ["."]
 include = ["gensrt*"]
 
 [tool.setuptools.package-data]
-gensrt = ["static/*"]
+gensrt = [
+    "static/*",
+    "templates/*",
+    "templates/js/*",
+]
 
 [tool.ruff]
 line-length = 100

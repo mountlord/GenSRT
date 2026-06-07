@@ -1,26 +1,96 @@
 // ── Config Editor ─────────────────────────────────────────
 let currentConfig = null;
 
+// GenSRT configuration schema.  Every field listed here must also appear in
+// the server-side _CONFIG_VALIDATORS dict in server.py — saves of fields
+// outside that allow-list are rejected.
 const configSchema = {
-  'Detection': {
-    'detection_threads':           { type: 'number',   hint: 'Parallel decode workers (1 = single-threaded, 2-4 for long files)' },
-    'sample_interval':             { type: 'number',   hint: 'Analyze every N frames' },
-    'tile_similarity_threshold':   { type: 'number',   step: 0.01, hint: 'Cosine similarity threshold (0–1)' },
-    'tile_early_exit_margin':      { type: 'number',   step: 0.01, hint: 'Early-exit margin above threshold' },
-    'tile_pad_before_seconds':     { type: 'number',   step: 0.1,  hint: 'Expand TILED chapters earlier by this many seconds (0 = off)' },
-    'tile_pad_after_seconds':      { type: 'number',   step: 0.1,  hint: 'Expand TILED chapters later by this many seconds (0 = off)' },
-    'merge_full_gaps_max_seconds': { type: 'number',   step: 0.5,  hint: 'Merge FULL gaps shorter than this after padding (0 = off)' },
-    'min_stable_enter_seconds':    { type: 'number',   step: 0.1,  hint: 'Seconds of evidence required to enter TILED' },
-    'min_stable_exit_seconds':     { type: 'number',   step: 0.1,  hint: 'Seconds of evidence required to exit TILED' },
-    'min_stable_samples':          { type: 'number',              hint: 'Minimum consecutive samples to commit a change' },
+  'Transcription': {
+    'model': {
+      type: 'select',
+      options: ['tiny', 'base', 'small', 'medium', 'large',
+                'large-v1', 'large-v2', 'large-v3', 'large-v3-turbo'],
+      hint: 'Whisper model.  Larger = more accurate but slower.  large-v3-turbo is a good default on modern GPUs.',
+    },
+    'source_language': {
+      type: 'select',
+      options: ['auto', 'en', 'es', 'fr', 'de', 'it', 'pt', 'ru', 'zh',
+                'ja', 'ko', 'hi', 'ml', 'ta', 'te', 'bn', 'ar', 'tr',
+                'vi', 'th', 'id', 'ms', 'pl', 'nl', 'sv', 'da', 'no',
+                'fi', 'cs', 'he', 'ur', 'fa'],
+      hint: 'Default audio language code (ISO 639-1).  "auto" detects per-file.  Footer selector overrides per job.',
+    },
+    'device': {
+      type: 'select',
+      options: ['auto', 'cuda', 'cpu'],
+      hint: 'Computation device.  "auto" picks GPU when available.',
+    },
+    'compute_type': {
+      type: 'select',
+      options: ['float32', 'float16', 'int8_float16', 'int8'],
+      hint: 'Numeric precision.  float16 is fastest on modern GPUs; int8 for slow hardware.',
+    },
+    'backend': {
+      type: 'select',
+      options: ['cuda', 'rocm', 'xpu', 'cpu'],
+      hint: 'GPU acceleration backend.',
+    },
+    'gpu_id': {
+      type: 'number', min: 0, max: 7, step: 1,
+      hint: 'GPU device index (0 = first GPU).',
+    },
+  },
+  'VAD & Subtitle Timing': {
+    'vad_enabled': {
+      type: 'checkbox',
+      hint: 'Filter silence before transcription.  Recommended.',
+    },
+    'vad_threshold': {
+      type: 'number', min: 0, max: 1, step: 0.05,
+      hint: 'Voice detection sensitivity (0–1).  Lower = more permissive (more audio treated as speech).',
+    },
+    'vad_min_speech_ms': {
+      type: 'number', min: 50, max: 10000, step: 50,
+      hint: 'Minimum speech segment duration (ms).  Shorter blips are dropped.',
+    },
+    'vad_min_silence_ms': {
+      type: 'number', min: 100, max: 10000, step: 100,
+      hint: 'Minimum silence to break segments (ms).  Larger = longer subtitle lines.',
+    },
+    'vad_speech_pad_ms': {
+      type: 'number', min: 0, max: 2000, step: 50,
+      hint: 'Padding added around detected speech (ms).  Higher = subtitles linger; lower = tighter timing.',
+    },
+    'min_subtitle_duration_s': {
+      type: 'number', min: 0, max: 60, step: 0.1,
+      hint: 'Minimum SRT line length (seconds).',
+    },
+    'max_subtitle_duration_s': {
+      type: 'number', min: 0, max: 60, step: 0.5,
+      hint: 'Maximum SRT line length (seconds).  Long Whisper segments are split when they exceed this.',
+    },
+  },
+  'Translation': {
+    'translate': {
+      type: 'checkbox',
+      hint: 'Translate transcript to the target language (English in this release).',
+    },
+    'translation_engine': {
+      type: 'select',
+      options: ['google', 'nllb', 'marian', 'none'],
+      hint: 'Default translation backend.  Footer selector overrides per job.',
+    },
   },
   'System': {
-    'out_dir':   { type: 'folder',   hint: 'Output directory (empty = same folder as video)' },
-    'debug':     { type: 'checkbox', hint: 'Write debug CSV alongside each video' },
-    'fbskip':    { type: 'number',   step: 0.5, hint: 'Skip Backward button duration (seconds)' },
-    'fskip':     { type: 'number',   step: 0.5, hint: 'Skip Forward button duration (seconds)' },
-    'gpu_id':    { type: 'number',              hint: 'GPU device index (0 = first GPU)' },
-    'log_level': { type: 'select',   options: ['DEBUG', 'INFO', 'WARNING', 'ERROR'], hint: 'Logging verbosity' },
+    'output': {
+      type: 'folder',
+      hint: 'Default output directory.  Leave empty to write the SRT next to the source video.',
+    },
+    'log_level': {
+      type: 'select',
+      options: ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
+      hint: 'Logging verbosity.',
+    },
   },
 };
 
@@ -117,6 +187,8 @@ function renderConfigEditor(config) {
         input.className   = 'config-field-input';
         input.value       = fieldValue !== null && fieldValue !== undefined ? fieldValue : '';
         input.step        = fieldDef.step || 1;
+        if (fieldDef.min !== undefined) input.min = fieldDef.min;
+        if (fieldDef.max !== undefined) input.max = fieldDef.max;
         input.dataset.key = fieldKey;
       }
 
@@ -138,6 +210,22 @@ function renderConfigEditor(config) {
 
 function collectConfigFromUI() {
   const config = { ...currentConfig };
+
+  // Strip keys that aren't in our schema and aren't on the small allow-list
+  // of valid-but-not-surfaced keys.  This protects users transitioning from
+  // older configs (e.g., tilester schema) from save failures — the server's
+  // validator rejects unknown keys, so anything stale here would 400.
+  const validKeys = new Set([
+    'output_filename', 'recurse',  // valid for /api/config but not exposed in UI
+  ]);
+  Object.values(configSchema).forEach(section => {
+    Object.keys(section).forEach(k => validKeys.add(k));
+  });
+  for (const k of Object.keys(config)) {
+    if (!validKeys.has(k)) delete config[k];
+  }
+
+  // Overlay current UI values.
   const inputs = configEditorBody.querySelectorAll('.config-field-input');
   inputs.forEach(input => {
     const key = input.dataset.key;
@@ -203,7 +291,7 @@ async function saveConfigToServer() {
     const response = await fetch('/api/config', {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ config })
+      body:    JSON.stringify(config)
     });
     const result = await response.json();
     if (result.status === 'success') {
@@ -213,7 +301,14 @@ async function saveConfigToServer() {
         renderConfigEditor(reloadResult.config);
         applyConfigToUI(reloadResult.config);
       }
-      showInfoDialog('Configuration', 'Configuration saved. Next detection will use these settings.');
+      // Sync the footer selectors (source language, translation engine, VAD)
+      // to the freshly-saved defaults so the next Generate SRT picks them up
+      // without requiring a page refresh.
+      if (typeof _initFooterSelectors === 'function') {
+        try { await _initFooterSelectors(); }
+        catch (e) { console.warn('Footer re-init after save failed:', e); }
+      }
+      showInfoDialog('Configuration', 'Configuration saved. Next transcription will use these settings.');
       configEditorModal.classList.remove('visible');
     } else {
       showErrorDialog('Configuration', `Failed to save config:<br><pre style="text-align:left; white-space:pre-wrap;">${formatServerError(result)}</pre>`);

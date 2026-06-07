@@ -14,7 +14,10 @@ if (browseBtn) {
       return;
     }
     api.select_video().then(path => {
-      if (path) tilesterSetVideoFromPath(path);
+      // Route via window.* so we hit the patched version installed by the
+      // sidecar hook in project.js — bare `tilesterSetVideoFromPath` would
+      // resolve to the IIFE-scoped original and skip sidecar discovery.
+      if (path) window.tilesterSetVideoFromPath(path);
     }).catch(err => {
       console.error('Load dialog error:', err);
       showErrorDialog('Load Failed', 'Load dialog failed. See console for details.');
@@ -65,7 +68,8 @@ const ENGINE_LABELS = {
 async function _initFooterSelectors() {
   const selSrc    = document.getElementById('sel-source-lang');
   const selEngine = document.getElementById('sel-engine');
-  if (!selSrc && !selEngine) return;
+  const selVad    = document.getElementById('sel-vad');
+  if (!selSrc && !selEngine && !selVad) return;
 
   // 1. Translation engine options come from the backend.
   if (selEngine) {
@@ -85,10 +89,11 @@ async function _initFooterSelectors() {
     }
   }
 
-  // 2. Pre-fill source language and engine from saved config defaults.
+  // 2. Pre-fill source language, engine, and VAD from saved config defaults.
   try {
-    const res = await fetch('/api/config');
-    const cfg = await res.json();
+    const res    = await fetch('/api/config');
+    const result = await res.json();
+    const cfg    = (result && result.config) ? result.config : {};
     if (selSrc && cfg.source_language) {
       // Only set if the value is one of our offered options; otherwise leave at 'auto'.
       const opt = selSrc.querySelector(`option[value="${cfg.source_language}"]`);
@@ -97,6 +102,9 @@ async function _initFooterSelectors() {
     if (selEngine && cfg.translation_engine) {
       const opt = selEngine.querySelector(`option[value="${cfg.translation_engine}"]`);
       if (opt) selEngine.value = cfg.translation_engine;
+    }
+    if (selVad && typeof cfg.vad_enabled === 'boolean') {
+      selVad.value = cfg.vad_enabled ? 'on' : 'off';
     }
   } catch (err) {
     console.error('Failed to load /api/config for selector defaults:', err);
@@ -220,9 +228,11 @@ async function callDetectAPI() {
   // Collect per-job overrides from the footer selectors.
   const selSrc    = document.getElementById('sel-source-lang');
   const selEngine = document.getElementById('sel-engine');
+  const selVad    = document.getElementById('sel-vad');
   const payload   = { input_path: videoPath };
   if (selSrc && selSrc.value)       payload.source_language    = selSrc.value;
   if (selEngine && selEngine.value) payload.translation_engine = selEngine.value;
+  if (selVad && selVad.value === 'off') payload.no_vad = true;
 
   detectBtn.disabled    = true;
   detectBtn.textContent = 'Generating...';

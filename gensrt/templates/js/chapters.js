@@ -16,29 +16,10 @@ player.addEventListener('loadedmetadata', () => {
 
 function renderChapterTimeline(chapters) {
   if (!chapterTimeline) return;
-
+  // GenSRT no longer renders per-SRT-line markers on the play-position bar
+  // (only the playhead needle is shown).  Clear any leftover segments from
+  // earlier code paths and reposition the needle.
   Array.from(chapterTimeline.querySelectorAll('.chapter-timeline-seg')).forEach(el => el.remove());
-
-  const duration = player.duration || 0;
-  if (!chapters || !chapters.length || duration <= 0) {
-    updateChapterTimelineNeedle();
-    return;
-  }
-
-  chapters.forEach(ch => {
-    const start = Math.max(0, parseFloat(ch.start_time) || 0);
-    const end   = Math.min(duration, parseFloat(ch.end_time) || duration);
-    if (end <= start) return;
-
-    const seg = document.createElement('div');
-    seg.className        = 'chapter-timeline-seg ' + (_chapterHasSeams(ch) ? 'seam' : 'full');
-    seg.style.left       = ((start / duration) * 100).toFixed(4) + '%';
-    seg.style.width      = (((end - start) / duration) * 100).toFixed(4) + '%';
-    seg.title            = `${ch.title || ''} ${fmtTime(start)} – ${fmtTime(end)}`;
-    seg.dataset.segIndex = ch.index;
-    chapterTimeline.insertBefore(seg, chapterTimelineNeedle);
-  });
-
   updateChapterTimelineNeedle();
 }
 
@@ -164,8 +145,15 @@ function renderLinks(data) {
 
     item.addEventListener('click', (e) => {
       if (e.target === checkbox || e.target === editIcon) return;
+      // Single-select semantics: clicking a row replaces any existing
+      // checkbox selection with just this row.  Multi-select is still
+      // available via the row checkboxes themselves.
+      for (let j = 0; j < chapterSelections.length; j++) chapterSelections[j] = (j === i);
+      const allCbs = linksBody.querySelectorAll('.chapter-checkbox');
+      allCbs.forEach((cb, j) => { cb.checked = (j === i); });
+      // Seek to the line's start and pause (no auto-play on click).
       player.currentTime = chaptersArr[i].start_time;
-      player.play();
+      try { player.pause(); } catch {}
     });
 
     linksBody.appendChild(item);
@@ -366,27 +354,40 @@ function onSegMarkClick() {
 
 if (segMarkBtn) segMarkBtn.addEventListener('click', onSegMarkClick);
 
+// Name kept for the api.js wiring (splitBtn click handler calls this).
+// Selection logic: use the row checkbox(es) — chapterSelections[i] is the
+// authoritative selection state.  Earlier behaviour scanned for the
+// chapter whose timing contained player.currentTime, which ignored the
+// user's explicit selection and felt random when no row was checked.
 function splitSegmentAtPlayhead() {
-  if (!player || !chaptersArr || !chaptersArr.length) {
+  if (!chaptersArr || !chaptersArr.length) {
     showErrorDialog('Split', 'No SRT lines available to split.');
     return;
   }
 
-  const t   = Number(player.currentTime || 0);
-  const EPS = 0.001;
+  const selectedIndices = chapterSelections
+    .map((sel, i) => (sel ? i : -1))
+    .filter(i => i >= 0);
 
-  let idx = -1;
-  for (let i = 0; i < chaptersArr.length; i++) {
-    const ch = chaptersArr[i];
-    const st = Number(ch.start_time);
-    const en = Number(ch.end_time);
-    if (isFinite(st) && isFinite(en) && t > (st + EPS) && t < (en - EPS)) { idx = i; break; }
+  if (selectedIndices.length === 0) {
+    showErrorDialog('Split',
+      'Select an SRT line to split first (tick the row checkbox).');
+    return;
   }
-  if (idx < 0) { showErrorDialog('Split', 'Playhead is not inside any SRT line.'); return; }
+  if (selectedIndices.length > 1) {
+    showErrorDialog('Split',
+      'Please select exactly one SRT line to split.');
+    return;
+  }
 
+  const idx  = selectedIndices[0];
   const orig = chaptersArr[idx];
+  const EPS  = 0.001;
   const dur  = Number(orig.end_time) - Number(orig.start_time);
-  if (!isFinite(dur) || dur <= EPS * 2) { showErrorDialog('Split', 'Selected SRT line is too small to split.'); return; }
+  if (!isFinite(dur) || dur <= EPS * 2) {
+    showErrorDialog('Split', 'Selected SRT line is too small to split.');
+    return;
+  }
 
   // Open the Split modal pre-filled.  start1 = original.start, end2 = original.end,
   // text1 = original.text.  end1 / start2 / text2 left blank for the user to fill in.
@@ -551,7 +552,7 @@ function deleteSelectedSegments() {
   }
 
   const count = selected.length;
-  const msg   = (count === 1) ? 'Remove the selected chapter?' : `Remove ${count} selected chapters?`;
+  const msg   = (count === 1) ? 'Remove the selected SRT line?' : `Remove ${count} selected SRT lines?`;
 
   const _doDelete = () => {
     selected.sort((a, b) => b - a);
@@ -566,7 +567,7 @@ function deleteSelectedSegments() {
     if (typeof updateButtonStates === 'function') updateButtonStates();
   };
 
-  showStyledConfirm('Remove Chapter' + (count > 1 ? 's' : ''), msg).then(ok => {
+  showStyledConfirm('Remove SRT Line' + (count > 1 ? 's' : ''), msg).then(ok => {
     if (ok) _doDelete();
   });
 }

@@ -21,7 +21,8 @@
         <input type="text"
                class="video-path-input"
                id="videoPathInput"
-               placeholder="Video path (for API mode): D:\Videos\video.mp4">
+               readonly
+               placeholder="Video path — set by drop, click, or Load">
         <button class="paste-btn" id="browseBtn" title="Load video file" style="display: none;">📁 Load</button>
         
         <button class="paste-btn" id="resetBtn" title="Start a new project">📂 New Project</button>
@@ -174,6 +175,13 @@
             title="Translation engine"
             style="background: var(--surface2); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 5px 6px; font-size: 12px; max-width: 160px;">
       <!-- populated from /api/engines in api.js -->
+    </select>
+
+    <select id="sel-vad"
+            title="Voice Activity Detection — filter silence before Whisper transcribes"
+            style="background: var(--surface2); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 5px 6px; font-size: 12px; max-width: 110px;">
+      <option value="on">VAD On</option>
+      <option value="off">VAD Off</option>
     </select>
 
     <button id="detectBtn" class="action-btn" disabled title="Generate SRT">Generate SRT</button>
