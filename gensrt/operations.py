@@ -173,7 +173,8 @@ def resolve_output_path(
     input_path: Path,
     output_dir: Path | None,
     output_filename: str | None,
+    target_language: str = "en",
 ) -> Path:
     """Thin wrapper around :func:`~gensrt.utils.media_files.resolve_output_path`."""
     from gensrt.utils.media_files import resolve_output_path as _resolve
-    return _resolve(input_path, output_dir, output_filename)
+    return _resolve(input_path, output_dir, output_filename, target_language)

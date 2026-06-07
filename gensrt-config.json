@@ -7,15 +7,16 @@
   "device": "cuda",
   "compute_type": "float16",
   "gpu_id": 0,
-  "source_language": "ko",
+  "source_language": "auto",
   "vad_enabled": true,
   "vad_threshold": 0.35,
   "vad_min_speech_ms": 250,
   "vad_min_silence_ms": 2000,
   "vad_speech_pad_ms": 150,
-  "max_subtitle_duration_s": 3,
+  "max_subtitle_duration_s": 10,
   "min_subtitle_duration_s": 1,
   "translation_engine": "google",
   "translate": true,
-  "backend": "cuda"
+  "backend": "cuda",
+  "target_language": "en"
 }

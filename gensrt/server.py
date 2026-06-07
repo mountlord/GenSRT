@@ -171,14 +171,45 @@ _READABLE_EXTS: frozenset[str] = _VIDEO_EXTS | frozenset({".srt"})
 def _find_sibling_video(srt_path: Path) -> Path | None:
     """Return the first sibling video file next to *srt_path*, or None.
 
-    Looks for ``<basename>.{mp4,mkv,ts,...}`` in the same directory.  Used by
-    the drop handler and the GET /api/srt endpoint to keep the SRT-load and
-    video-load UI flows symmetric.
+    Handles both naming conventions:
+      * ``movie.srt``      → looks for ``movie.{mp4,mkv,...}``
+      * ``movie.ml.srt``   → tries ``movie.ml.{...}`` first (unlikely
+                             but possible if user really has that file),
+                             then strips the ``.ml`` and tries
+                             ``movie.{mp4,mkv,...}`` — the common case.
+
+    The language-code detection is heuristic: the second-to-last suffix
+    must be 2-3 lowercase ASCII letters.  ``movie.korean-cut.srt`` is
+    left alone (``korean-cut`` is longer than 3 chars and contains a
+    hyphen) — we only look for ``movie.korean-cut.{ext}`` and don't
+    strip anything.
+
+    Implementation note: we use string concatenation rather than
+    :meth:`Path.with_suffix` because Python treats ``.korean-cut`` as a
+    valid suffix and would happily strip it — that's not what we want
+    when probing the literal stem.
     """
-    for ext in _VIDEO_EXTS:
-        candidate = srt_path.with_suffix(ext)
-        if candidate.exists() and candidate.is_file():
-            return candidate
+    # Strip exactly the trailing '.srt' from the filename — no clever
+    # suffix handling.
+    full_name = srt_path.name
+    literal_stem = full_name[: -len(srt_path.suffix)] if srt_path.suffix else full_name
+    base_stems: list[str] = [literal_stem]
+
+    # If srt_path looks like 'foo.ml.srt', also consider 'foo' as a base.
+    suffixes = srt_path.suffixes  # e.g. ['.ml', '.srt']
+    if len(suffixes) >= 2:
+        possible_lang = suffixes[-2].lstrip(".")
+        if (2 <= len(possible_lang) <= 3
+                and possible_lang.isalpha()
+                and possible_lang.islower()):
+            stem_no_lang = literal_stem[: -len(suffixes[-2])]
+            base_stems.append(stem_no_lang)
+
+    for base in base_stems:
+        for ext in _VIDEO_EXTS:
+            candidate = srt_path.parent / (base + ext)
+            if candidate.exists() and candidate.is_file():
+                return candidate
     return None
 
 
@@ -243,12 +274,38 @@ def _parse_rate_to_float(rate: str) -> Optional[float]:
 
 
 def _find_sidecar_srt(video_path: Path) -> Optional[Path]:
-    """Look for ``<basename>.srt`` next to a video file.
+    """Look for an SRT next to a video file.
 
-    Returns the SRT path if it exists, else ``None``.
+    Discovery order (matches Plex/Jellyfin sidecar conventions):
+      1. ``<basename>.srt``           — preferred (treated as the default
+                                        / English track)
+      2. ``<basename>.<any>.srt``     — first language-suffixed SRT we find
+                                        (e.g. ``movie.ml.srt``, ``movie.ko.srt``)
+
+    The simple `<basename>.srt` always wins when present, regardless of
+    what target language the user currently has selected.  Use the file
+    picker or drag the specific .lang.srt to load a different track.
+
+    Returns the SRT path if one is found, else ``None``.
     """
-    candidate = video_path.with_suffix(".srt")
-    return candidate if candidate.exists() and candidate.is_file() else None
+    # Preferred: unsuffixed sidecar.
+    canonical = video_path.with_suffix(".srt")
+    if canonical.exists() and canonical.is_file():
+        return canonical
+
+    # Fallback: any <basename>.*.srt in the same directory.  We don't try
+    # to guess "best language" — first match wins.  Glob is bounded by
+    # basename so this is fast even on large folders.
+    base_stem = video_path.stem
+    parent = video_path.parent
+    try:
+        for candidate in parent.glob(f"{base_stem}.*.srt"):
+            if candidate.is_file():
+                return candidate
+    except OSError:
+        # Some filesystems object to glob on certain characters; be quiet.
+        pass
+    return None
 
 
 def _validate_srt_save_path(path_str: str) -> tuple[Path, str | None]:
@@ -339,6 +396,7 @@ def api_transcribe():
             "output_filename":    "custom.srt",           // optional
             "translation_engine": "google",               // optional
             "source_language":    "auto",                 // optional
+            "target_language":    "en",                   // optional; non-en only with engine="google"
             "no_translate":       false,                  // optional
             "no_vad":             false,                  // optional
             "model":              "large-v3-turbo",       // optional
@@ -357,7 +415,9 @@ def api_transcribe():
     output_dir_str = body.get("output_dir") or None
     output_dir = Path(output_dir_str).expanduser().resolve() if output_dir_str else None
     output_filename = body.get("output_filename") or None
-    output_path = resolve_output_path(input_path, output_dir, output_filename)
+    # NOTE: output_path is resolved AFTER the config is built so the
+    # language-suffix naming convention (movie.ml.srt, etc.) can pick up
+    # the actual target_language for this job.
 
     # Build config from defaults + request overrides
     try:
@@ -370,6 +430,8 @@ def api_transcribe():
         overrides["translation_engine"] = body["translation_engine"]
     if "source_language" in body:
         overrides["source_language"] = body["source_language"]
+    if "target_language" in body:
+        overrides["target_language"] = body["target_language"]
     if body.get("no_translate"):
         overrides["translate"] = False
     if body.get("no_vad"):
@@ -379,6 +441,35 @@ def api_transcribe():
 
     merged = {**file_cfg, **overrides}
     config = build_transcription_config(merged, auto_detect_backend=True)
+
+    # Resolved here (after config) so the language suffix uses the real target.
+    # When translate=False the subtitles are in the *source* language, so we
+    # use that for the suffix.  If source_language is "auto", Whisper will
+    # detect it later — we can't pre-compute a suffix, so we fall back to
+    # unsuffixed (matches the pre-Drop-I.7 behaviour for that edge case).
+    if config.translate:
+        effective_lang = config.target_language
+    else:
+        effective_lang = (
+            config.source_language
+            if config.source_language and config.source_language.lower() != "auto"
+            else "en"  # "en" -> no suffix in resolve_output_path
+        )
+    output_path = resolve_output_path(
+        input_path, output_dir, output_filename, effective_lang
+    )
+
+    # Engine policy: reject mismatched engine + target before any expensive
+    # work (audio extract, model load) runs.  The same gate fires in
+    # pipeline.run_pipeline; doing it here too means /api/transcribe can
+    # return 400 with the user-facing message instead of 500 from the
+    # exception path.
+    from gensrt.pipeline import validate_translation_config
+    from gensrt.exceptions import ConfigError
+    try:
+        validate_translation_config(config)
+    except ConfigError as exc:
+        return jsonify({"status": "error", "message": str(exc)}), 400
 
     # Gate: only one job at a time
     try:
@@ -496,6 +587,7 @@ _CONFIG_VALIDATORS = {
     "min_subtitle_duration_s": _v_num_range(0.0, 60.0),
     "translation_engine":      _v_str_in(_ENGINE_CHOICES),
     "translate":               _v_bool,
+    "target_language":         _v_str,
     # Non-transcription (preserved-through, not currently surfaced in UI)
     "output":                  _v_str_or_null,
     "output_filename":         _v_str_or_null,

@@ -58,16 +58,16 @@ class GoogleGTXEngine(TranslationEngine):
 
     # ── Single text ────────────────────────────────────────────────────────
 
-    def translate(self, text: str, source_language: str) -> str:
+    def translate(self, text: str, source_language: str, target_language: str = "en") -> str:
         if not text.strip():
             return text
-        results = self.translate_batch([text], source_language)
+        results = self.translate_batch([text], source_language, target_language)
         return results[0]
 
     # ── Batch (primary interface used by pipeline) ─────────────────────────
 
-    def translate_batch(self, texts: list[str], source_language: str) -> list[str]:
-        """Translate *texts* to English using GTX glue-string batching.
+    def translate_batch(self, texts: list[str], source_language: str, target_language: str = "en") -> list[str]:
+        """Translate *texts* to *target_language* using GTX glue-string batching.
 
         Splits the list into chunks respecting ``_BATCH_MAX_CHARS`` /
         ``_BATCH_MAX_ITEMS``, sends each chunk as a single GTX request,
@@ -77,17 +77,18 @@ class GoogleGTXEngine(TranslationEngine):
             return []
 
         src = source_language if source_language not in ("auto", "") else "auto"
+        tgt = target_language or "en"
         results: list[str] = [""] * len(texts)
 
         for chunk_indices, chunk_texts in _make_chunks(texts):
             try:
-                translated = self._gtx_glue_batch(chunk_texts, src)
+                translated = self._gtx_glue_batch(chunk_texts, src, tgt)
             except Exception as exc:
                 logger.warning(
                     "[google-gtx] Batch failed (%s) — falling back to MyMemory.", exc
                 )
                 translated = [
-                    self._mymemory_single(t, src) for t in chunk_texts
+                    self._mymemory_single(t, src, tgt) for t in chunk_texts
                 ]
 
             for idx, text in zip(chunk_indices, translated):
@@ -97,16 +98,16 @@ class GoogleGTXEngine(TranslationEngine):
 
     # ── GTX glue-string request ────────────────────────────────────────────
 
-    def _gtx_glue_batch(self, texts: list[str], src: str) -> list[str]:
+    def _gtx_glue_batch(self, texts: list[str], src: str, tgt: str = "en") -> list[str]:
         """Translate *texts* via a single GTX request using glue strings."""
         if len(texts) == 1:
-            return [self._gtx_single(texts[0], src)]
+            return [self._gtx_single(texts[0], src, tgt)]
 
         combined = _GLUE.join(texts)
         params = {
             "client": "gtx",
             "sl": src,
-            "tl": "en",
+            "tl": tgt,
             "dt": "t",
             "q": combined,
         }
@@ -127,9 +128,9 @@ class GoogleGTXEngine(TranslationEngine):
 
         return parts
 
-    def _gtx_single(self, text: str, src: str) -> str:
+    def _gtx_single(self, text: str, src: str, tgt: str = "en") -> str:
         """Single-text GTX request."""
-        params = {"client": "gtx", "sl": src, "tl": "en", "dt": "t", "q": text}
+        params = {"client": "gtx", "sl": src, "tl": tgt, "dt": "t", "q": text}
         data = self._fetch_gtx(params)
         return "".join(seg[0] for seg in data[0] if seg[0])
 
@@ -162,11 +163,11 @@ class GoogleGTXEngine(TranslationEngine):
 
     # ── MyMemory fallback ──────────────────────────────────────────────────
 
-    def _mymemory_single(self, text: str, src: str) -> str:
+    def _mymemory_single(self, text: str, src: str, tgt: str = "en") -> str:
         """Translate a single text via MyMemory (fallback)."""
         if not text.strip():
             return text
-        lang_pair = f"{src}|en"
+        lang_pair = f"{src}|{tgt}"
         try:
             resp = requests.get(
                 _MYMEMORY_URL,

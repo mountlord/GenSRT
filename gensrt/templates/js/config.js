@@ -73,12 +73,19 @@ const configSchema = {
   'Translation': {
     'translate': {
       type: 'checkbox',
-      hint: 'Translate transcript to the target language (English in this release).',
+      hint: 'Translate transcript to the target language.',
     },
     'translation_engine': {
       type: 'select',
       options: ['google', 'nllb', 'marian', 'none'],
       hint: 'Default translation backend.  Footer selector overrides per job.',
+    },
+    'target_language': {
+      type: 'select',
+      options: ['en', 'es', 'fr', 'de', 'pt', 'ru', 'zh', 'ja', 'ko',
+                'ar', 'hi', 'ml', 'ta', 'te', 'bn', 'id', 'vi', 'th',
+                'tr', 'pl'],
+      hint: 'Target language code (ISO 639-1).  Non-English targets are only supported by the "google" engine — Marian and NLLB stay X→English.',
     },
   },
   'System': {

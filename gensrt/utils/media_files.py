@@ -62,6 +62,7 @@ def resolve_output_path(
     input_path: Path,
     output_dir: Path | None,
     output_filename: str | None,
+    target_language: str = "en",
 ) -> Path:
     """Determine the output .srt path for a given input file.
 
@@ -71,14 +72,24 @@ def resolve_output_path(
       2. ``output_filename`` set, ``output_dir`` not set
          → ``input_path.parent / output_filename``
       3. ``output_dir`` set, no ``output_filename``
-         → ``output_dir / <stem>.srt``
+         → ``output_dir / <stem>[.<lang>].srt``
       4. Neither set
-         → ``input_path.parent / <stem>.srt``
+         → ``input_path.parent / <stem>[.<lang>].srt``
+
+    Language suffix convention (Plex/Jellyfin/Kodi-compatible):
+      * ``target_language == "en"`` → no suffix; ``movie.srt``
+      * any other ISO 639-1 code   → ``movie.<lang>.srt`` (e.g. ``movie.ml.srt``)
+
+    English is left unsuffixed to preserve backward compatibility with
+    existing libraries.  An explicit ``output_filename`` is always honoured
+    verbatim — no language suffix is inserted there.
 
     Args:
         input_path:       Resolved path to the input media file.
         output_dir:       Optional directory override from ``--output``.
         output_filename:  Optional filename override from ``--output-filename``.
+        target_language:  ISO 639-1 code for the translation target.  Used to
+                          decide whether to insert a language suffix.
 
     Returns:
         Resolved :class:`Path` for the .srt output file.
@@ -94,4 +105,7 @@ def resolve_output_path(
 
     stem = input_path.stem
     target_dir = output_dir or input_path.parent
+    lang = (target_language or "en").strip().lower()
+    if lang and lang != "en":
+        return Path(target_dir) / f"{stem}.{lang}.srt"
     return Path(target_dir) / f"{stem}.srt"

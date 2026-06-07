@@ -422,7 +422,22 @@ def _run_headless(args: argparse.Namespace) -> int:
     t0 = time.perf_counter()
 
     for i, media_path in enumerate(media_files, 1):
-        out_path = resolve_output_path(media_path, output_dir, output_filename)
+        # Effective output language for the .lang.srt suffix:
+        #   * translating → target language
+        #   * not translating + explicit source → source language
+        #   * not translating + source=auto → "en" (no suffix; detection
+        #     happens later, can't pre-compute)
+        if config.translate:
+            _eff_lang = config.target_language
+        else:
+            _eff_lang = (
+                config.source_language
+                if config.source_language and config.source_language.lower() != "auto"
+                else "en"
+            )
+        out_path = resolve_output_path(
+            media_path, output_dir, output_filename, _eff_lang
+        )
 
         print(f"\n[{i}/{len(media_files)}] {media_path.name}", file=sys.stderr)
         print(f"  → {out_path}", file=sys.stderr)

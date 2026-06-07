@@ -67,9 +67,10 @@ const ENGINE_LABELS = {
 
 async function _initFooterSelectors() {
   const selSrc    = document.getElementById('sel-source-lang');
+  const selTgt    = document.getElementById('sel-target-lang');
   const selEngine = document.getElementById('sel-engine');
   const selVad    = document.getElementById('sel-vad');
-  if (!selSrc && !selEngine && !selVad) return;
+  if (!selSrc && !selEngine && !selVad && !selTgt) return;
 
   // 1. Translation engine options come from the backend.
   if (selEngine) {
@@ -89,7 +90,7 @@ async function _initFooterSelectors() {
     }
   }
 
-  // 2. Pre-fill source language, engine, and VAD from saved config defaults.
+  // 2. Pre-fill source language, target language, engine, and VAD from saved config defaults.
   try {
     const res    = await fetch('/api/config');
     const result = await res.json();
@@ -98,6 +99,14 @@ async function _initFooterSelectors() {
       // Only set if the value is one of our offered options; otherwise leave at 'auto'.
       const opt = selSrc.querySelector(`option[value="${cfg.source_language}"]`);
       if (opt) selSrc.value = cfg.source_language;
+    }
+    if (selTgt && cfg.target_language) {
+      // Only set if it's one of the curated UI options.  If a power user has
+      // a target outside our list set via CLI/config, the footer stays on
+      // its default — they can adjust via the modal or use the CLI for that
+      // job.  This keeps the footer dropdown deterministic.
+      const opt = selTgt.querySelector(`option[value="${cfg.target_language}"]`);
+      if (opt) selTgt.value = cfg.target_language;
     }
     if (selEngine && cfg.translation_engine) {
       const opt = selEngine.querySelector(`option[value="${cfg.translation_engine}"]`);
@@ -227,10 +236,12 @@ async function callDetectAPI() {
 
   // Collect per-job overrides from the footer selectors.
   const selSrc    = document.getElementById('sel-source-lang');
+  const selTgt    = document.getElementById('sel-target-lang');
   const selEngine = document.getElementById('sel-engine');
   const selVad    = document.getElementById('sel-vad');
   const payload   = { input_path: videoPath };
   if (selSrc && selSrc.value)       payload.source_language    = selSrc.value;
+  if (selTgt && selTgt.value)       payload.target_language    = selTgt.value;
   if (selEngine && selEngine.value) payload.translation_engine = selEngine.value;
   if (selVad && selVad.value === 'off') payload.no_vad = true;
 

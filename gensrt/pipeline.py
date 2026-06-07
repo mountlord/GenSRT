@@ -34,6 +34,35 @@ def _noop_progress(_c: int, _t: int) -> None:
     pass
 
 
+def validate_translation_config(config: TranscriptionConfig) -> None:
+    """Reject translation configs that the chosen engine can't honour.
+
+    Engine policy:
+        Only the ``google`` engine supports non-English target languages.
+        Marian and NLLB are X→English only.
+
+    Raises:
+        ConfigError: When the user wants a non-English target with an
+                     engine other than ``google``.
+
+    No-ops when ``config.translate`` is False or when the target is
+    English.
+    """
+    from gensrt.exceptions import ConfigError
+    if not config.translate:
+        return
+    if config.target_language.lower() == "en":
+        return
+    if config.translation_engine.lower() == "google":
+        return
+    raise ConfigError(
+        f"Target language {config.target_language!r} is only supported by the "
+        f"'google' translation engine.  Current engine: "
+        f"{config.translation_engine!r}.  Switch the engine to Google, set "
+        f"the target language to English, or disable translation."
+    )
+
+
 def run_pipeline(
     input_path: Path,
     output_path: Path,
@@ -65,6 +94,10 @@ def run_pipeline(
         progress = _noop_progress
     if status is None:
         status = _noop_status
+
+    # Reject engine + target_language combinations the chosen engine can't
+    # honour, before any expensive work (audio extract / model load) runs.
+    validate_translation_config(config)
 
     input_path = Path(input_path).resolve()
     output_path = Path(output_path)
@@ -99,15 +132,19 @@ def run_pipeline(
         logger.info("Using language: %s", detected_language)
 
         # ── Phase 3: Translation ──────────────────────────────────────────
+        # Normalize "english" → "en" so faster-whisper's occasional name-form
+        # output compares correctly to ISO codes in the target.
+        det_norm = "en" if detected_language.lower() in ("english", "en") else detected_language.lower()
+        tgt_norm = config.target_language.lower()
         should_translate = (
             config.translate
             and config.translation_engine != "none"
-            and detected_language not in ("en", "english")
+            and det_norm != tgt_norm
         )
 
         if should_translate:
             status(
-                f"Translating ({detected_language} → en) "
+                f"Translating ({detected_language} → {config.target_language}) "
                 f"via {config.translation_engine}…"
             )
         progress(2, PIPELINE_PHASES)
@@ -279,7 +316,9 @@ def _build_segments(
 
     texts = [seg.text for seg in srt_segments]
     try:
-        translated_texts = engine.translate_batch(texts, detected_language)
+        translated_texts = engine.translate_batch(
+            texts, detected_language, config.target_language
+        )
     except Exception as exc:
         logger.warning(
             "translate_batch failed (%s) — keeping all originals.", exc

@@ -110,6 +110,7 @@ class TranscriptionConfig:
     # Translation
     translation_engine: str = "google"
     translate: bool = True
+    target_language: str = "en"     # ISO 639-1; non-en only supported by 'google'
 
     # Backend (set by gpu_probe, not directly by user)
     backend: str = "cuda"

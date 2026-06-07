@@ -60,12 +60,17 @@ class NLLBEngine(TranslationEngine):
     def name(self) -> str:
         return "nllb-200"
 
-    def translate(self, text: str, source_language: str) -> str:
+    def translate(self, text: str, source_language: str, target_language: str = "en") -> str:
         """Translate *text* to English using NLLB-200.
 
         Args:
             text:            Text to translate.
             source_language: ISO 639-1 code (e.g. ``"ja"``, ``"ko"``, ``"ml"``).
+            target_language: Accepted for signature compatibility with the
+                             base class.  The pipeline's engine-policy gate
+                             blocks this engine from being called with a
+                             non-English target, so this parameter is unused
+                             — output is always English.
 
         Returns:
             Translated English text.
@@ -73,11 +78,15 @@ class NLLBEngine(TranslationEngine):
         Raises:
             TranslationError: If the language is unsupported or inference fails.
         """
-        results = self.translate_batch([text], source_language)
+        results = self.translate_batch([text], source_language, target_language)
         return results[0]
 
-    def translate_batch(self, texts: list[str], source_language: str) -> list[str]:
-        """Translate a batch of texts via NLLB-200 in a single pipeline call."""
+    def translate_batch(self, texts: list[str], source_language: str, target_language: str = "en") -> list[str]:
+        """Translate a batch of texts via NLLB-200 in a single pipeline call.
+
+        Always outputs English regardless of *target_language* — see
+        :meth:`translate` for the rationale.
+        """
         if not texts:
             return []
 

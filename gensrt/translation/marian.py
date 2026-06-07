@@ -65,12 +65,18 @@ class MarianEngine(TranslationEngine):
     def name(self) -> str:
         return "marian-mt"
 
-    def translate(self, text: str, source_language: str) -> str:
-        results = self.translate_batch([text], source_language)
+    def translate(self, text: str, source_language: str, target_language: str = "en") -> str:
+        results = self.translate_batch([text], source_language, target_language)
         return results[0]
 
-    def translate_batch(self, texts: list[str], source_language: str) -> list[str]:
-        """Translate a batch via MarianMT tokeniser in a single forward pass."""
+    def translate_batch(self, texts: list[str], source_language: str, target_language: str = "en") -> list[str]:
+        """Translate a batch via MarianMT tokeniser in a single forward pass.
+
+        Note: Marian Helsinki-NLP models are *X→English* only.  The pipeline's
+        engine-policy gate prevents this engine from being called with a
+        non-English target_language, so the parameter is accepted for
+        signature compatibility with the base class but otherwise unused.
+        """
         if not texts:
             return []
 

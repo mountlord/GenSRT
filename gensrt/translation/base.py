@@ -17,21 +17,26 @@ class TranslationEngine(ABC):
     """Abstract base for all translation engines."""
 
     @abstractmethod
-    def translate(self, text: str, source_language: str) -> str:
-        """Translate *text* from *source_language* to English.
+    def translate(self, text: str, source_language: str, target_language: str = "en") -> str:
+        """Translate *text* from *source_language* to *target_language*.
 
         Args:
             text:            Text to translate.
             source_language: ISO 639-1 language code (e.g. ``"ja"``, ``"ko"``).
+            target_language: ISO 639-1 language code for the desired output
+                             language.  Defaults to English.  Only the
+                             ``google`` engine currently honours non-English
+                             targets — the pipeline gates on this before
+                             calling the engine.
 
         Returns:
-            Translated English text.
+            Translated text in *target_language*.
 
         Raises:
             TranslationError: On engine failure.
         """
 
-    def translate_batch(self, texts: list[str], source_language: str) -> list[str]:
+    def translate_batch(self, texts: list[str], source_language: str, target_language: str = "en") -> list[str]:
         """Translate a list of texts, batching where the engine supports it.
 
         Default implementation calls :meth:`translate` per item with per-item
@@ -42,6 +47,7 @@ class TranslationEngine(ABC):
         Args:
             texts:           List of texts to translate.
             source_language: ISO 639-1 language code.
+            target_language: ISO 639-1 language code for the desired output.
 
         Returns:
             List of translated strings in the same order as *texts*.
@@ -49,7 +55,7 @@ class TranslationEngine(ABC):
         results: list[str] = []
         for text in texts:
             try:
-                results.append(self.translate(text, source_language))
+                results.append(self.translate(text, source_language, target_language))
             except Exception as exc:
                 logger.warning(
                     "[%s] translate failed (%s) — keeping original.", self.name, exc
@@ -73,10 +79,10 @@ class PassthroughEngine(TranslationEngine):
     Used when ``--translation-engine none`` or source language is English.
     """
 
-    def translate(self, text: str, source_language: str) -> str:
+    def translate(self, text: str, source_language: str, target_language: str = "en") -> str:
         return text
 
-    def translate_batch(self, texts: list[str], source_language: str) -> list[str]:
+    def translate_batch(self, texts: list[str], source_language: str, target_language: str = "en") -> list[str]:
         return list(texts)
 
     def is_available(self) -> bool:

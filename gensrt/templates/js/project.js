@@ -61,6 +61,43 @@ async function loadSrtFromPath(srtPath, options = {}) {
 
 window.gensrtLoadSrtFromPath = loadSrtFromPath;
 
+// ── Load SRT for a given video (server-side sidecar discovery) ─
+//
+// Uses ``GET /api/srt?video=<path>`` so the server's discovery rules
+// (prefer ``movie.srt`` over ``movie.<lang>.srt``, fall back to any
+// language variant when no canonical track exists) apply.
+//
+// Used by the sidecar hook below — never by direct user action.
+// 404 from the server means "no sidecar SRT for this video", which is
+// the silent-no-op case (right pane stays empty until user generates).
+async function loadSrtFromVideo(videoPath, options = {}) {
+  const { quiet = false } = options;
+  if (!videoPath) return false;
+  try {
+    const resp = await fetch(`/api/srt?video=${encodeURIComponent(videoPath)}`);
+    if (!resp.ok) {
+      // 404 → no sidecar exists.  Treat as silent miss when quiet.
+      if (resp.status === 404) return false;
+      if (!quiet) {
+        const j = await resp.json().catch(() => ({}));
+        showErrorDialog('SRT Load Failed', j.error || `HTTP ${resp.status}`);
+      }
+      return false;
+    }
+    const data = await resp.json();
+    // Use the path the server actually picked (could be movie.srt OR
+    // movie.ml.srt etc.) so Save round-trips back to the same file.
+    _applySrtPayload(data, data.path || null);
+    return true;
+  } catch (err) {
+    console.error('loadSrtFromVideo failed:', err);
+    if (!quiet) showErrorDialog('SRT Load Failed', err.message || String(err));
+    return false;
+  }
+}
+
+window.gensrtLoadSrtFromVideo = loadSrtFromVideo;
+
 // ── Browser-mode file drop (loadJSON's slot in player.js) ─
 //
 // Player.js (off-limits) calls window-side `loadJSON` from its file-picker
@@ -170,10 +207,12 @@ function loadJSON(file) {
     try {
       const p = String(fullPath || '');
       if (p) {
-        const srtPath = p.replace(/\.[^/.\\]+$/, '.srt');
-        if (srtPath && srtPath !== p) {
-          loadSrtFromPath(srtPath, { quiet: true });
-        }
+        // Delegate sidecar discovery to the server.  /api/srt?video=...
+        // tries <basename>.srt first, then any <basename>.*.srt, so the
+        // user sees the canonical track when present and a language
+        // variant when that's all that exists.  Constructing the path
+        // client-side would force <basename>.srt and miss the variants.
+        loadSrtFromVideo(p, { quiet: true });
       }
     } catch (e) {
       console.warn('Sidecar SRT lookup failed:', e);
