@@ -144,6 +144,10 @@ ENV/
 env.bak/
 venv.bak/
 
+# Custom
+SrtTest/
+
+
 # Spyder project settings
 .spyderproject
 .spyproject

@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GenSRT</title>
+<link rel="stylesheet" href="/static/tokens.css">
+<link rel="stylesheet" href="/static/review.css">
+</head>
+<body>
+
+
+<div class="app" id="appRoot">
+  <!-- Top section: Video + Navigation side by side -->
+  <div class="top-section">
+    <!-- Left: Video -->
+    <div class="video-panel">
+      <div class="video-header">
+        <span class="logo">gensrt</span>
+        <span class="filename" id="videoName">No video loaded</span>
+        <input type="text"
+               class="video-path-input"
+               id="videoPathInput"
+               placeholder="Video path (for API mode): D:\Videos\video.mp4">
+        <button class="paste-btn" id="browseBtn" title="Load video file" style="display: none;">📁 Load</button>
+        
+        <button class="paste-btn" id="resetBtn" title="Start a new project">📂 New Project</button>
+        <button class="paste-btn" id="saveBtn" title="Save SRT file">💾 Save</button>
+        <button class="paste-btn" id="saveAsBtn" title="Save project as (same folder)">📝 Save As</button>
+        <button class="paste-btn" id="configBtn" title="Manage Configuration">⚙️ Config</button>
+        <button class="stc-btn" id="stcBtn" title="Not affiliated with Save the Children. Opens their official donation page.">❤️ Save The Children</button>
+      </div>
+
+      <div class="video-container" id="videoContainer">
+        <!-- IMPORTANT:
+             controlsList="nofullscreen" removes native video fullscreen button in Chromium.
+             That keeps fullscreen under *our* control (app fullscreen), which is required for overlays/drawers. -->
+        <video id="player"
+               disablepictureinpicture
+               playsinline
+               preload="auto"
+               style="display:none;"></video>
+
+        <div class="drop-zone-video" id="videoDrop">
+          <div class="icon">🎬</div>
+          <div class="label">Drop video file here</div>
+          <div class="sublabel">or click to browse</div>
+        </div>
+      </div><!-- end video-container -->
+
+      <!-- Custom controls bar: seekbar + play/pause/volume/fullscreen -->
+      <div class="video-controls" id="videoControls">
+        <div class="chapter-timeline" id="chapterTimeline">
+          <div class="chapter-timeline-needle" id="chapterTimelineNeedle"></div>
+        </div>
+        <div class="video-controls-row">
+          <button class="vc-btn" id="vcPlayBtn"   title="Play / Pause (Space)">▶</button>
+          <div style="flex:1"></div>
+          <button class="vc-btn" id="vcVolumeBtn" title="Volume (M)">🔊</button>
+          <button class="vc-btn" id="vcFsBtn"     title="Fullscreen (F)">⛶</button>
+        </div>
+      </div>
+
+    </div><!-- end video-panel -->
+    <div class="links-panel" id="linksPanel">
+      <div class="links-header">
+        <span class="lh-title">SRT Lines</span>
+        <span class="lh-count" id="linkCount"></span>
+        <button class="links-action-btn" id="splitBtn" title="Split SRT line">✂ Split</button>
+        <button class="links-action-btn" id="mergeBtn" title="Merge adjacent SRT lines">🔗 Merge</button>
+        <button class="links-action-btn" id="deleteBtn" title="Delete selected SRT lines">🗑 Delete</button>
+      </div>
+
+      <div class="links-body" id="linksBody">
+        <div class="links-empty" id="jsonDrop">
+          <div class="icon">📋</div>
+          <div class="label">
+            Drop <span style="color:var(--accent)">.srt</span> here<br>
+            <small style="opacity:0.6">or click <strong>Generate SRT</strong> below</small>
+          </div>
+        </div>
+
+        <div id="navContainer" style="display:none;"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Bottom: Footer spanning full width -->
+  <div class="video-footer">
+    <!-- Footer layout (fixed): Pin • Time • Copy • Frame • SegMark • FPS/Nom • FB • FF • GoToF • GoToT • Help • Actions • Fullscreen -->
+
+    <button id="pinBtn" class="pin-btn" title="Pin UI Elements (P)">📌 Pin</button>
+
+    <span class="current-time" id="currentTime">00:00:00.000</span>
+    <button id="copyTimeBtn" class="copy-btn" title="Copy Time to Clipboard">📋</button>
+
+    <span id="frameNum" class="footer-box w-frame" title="Current frame"><span class="box-value">—</span></span>
+
+    <button id="segMarkBtn" class="segmark-btn" title="Start/End SRT line">▴</button>
+
+    <span id="fpsDisplay" class="footer-box w-fps" title="FPS (effective / nominal)"><span class="box-value">—/—</span></span>
+
+    <span class="footer-box" title="Skip backward seconds (ArrowLeft)"><span class="box-label">FB</span>
+      <input type="text" id="skipBackward" value="5" inputmode="decimal" aria-label="Skip backward seconds">
+    </span>
+
+    <span class="footer-box" title="Skip forward seconds (ArrowRight)"><span class="box-label">FF</span>
+      <input type="text" id="skipForward" value="5" inputmode="decimal" aria-label="Skip forward seconds">
+    </span>
+
+    <span class="goto-frame" title="Go to frame">
+      <span class="footer-box w-gof"><input type="text" id="gotoFrame" inputmode="numeric" placeholder="9999999" aria-label="Go to frame"></span>
+      <button id="gotoFrameBtn" class="goto-act-btn" title="Go to frame">◀</button>
+    </span>
+
+    <span class="goto-time" title="Go to time">
+      <span class="footer-box w-got"><input type="text" id="gotoTime" placeholder="00:00:00.123" aria-label="Go to time"></span>
+      <button id="gotoTimeBtn" class="goto-act-btn" title="Go to time">◀</button>
+    </span>
+
+    <div class="shortcut-hints" style="flex: 1 1 auto; min-width: 120px; overflow: hidden; text-overflow: ellipsis;">
+      <span>◀▶ skip</span>
+      <span>,. frame</span>
+      <span>⎵ play</span>
+      <span><span class="kbd">f</span> fullscreen</span>
+    </div>
+
+    <!-- Per-job translation controls.  Populated from /api/config and /api/engines. -->
+    <select id="sel-source-lang"
+            title="Source language of the audio (passed to Whisper)"
+            style="background: var(--surface2); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 5px 6px; font-size: 12px; max-width: 130px;">
+      <option value="auto">Auto-detect</option>
+      <option value="en">English</option>
+      <option value="es">Spanish</option>
+      <option value="fr">French</option>
+      <option value="de">German</option>
+      <option value="it">Italian</option>
+      <option value="pt">Portuguese</option>
+      <option value="ru">Russian</option>
+      <option value="zh">Chinese</option>
+      <option value="ja">Japanese</option>
+      <option value="ko">Korean</option>
+      <option value="hi">Hindi</option>
+      <option value="ml">Malayalam</option>
+      <option value="ta">Tamil</option>
+      <option value="te">Telugu</option>
+      <option value="bn">Bengali</option>
+      <option value="ar">Arabic</option>
+      <option value="tr">Turkish</option>
+      <option value="vi">Vietnamese</option>
+      <option value="th">Thai</option>
+      <option value="id">Indonesian</option>
+      <option value="ms">Malay</option>
+      <option value="pl">Polish</option>
+      <option value="nl">Dutch</option>
+      <option value="sv">Swedish</option>
+      <option value="da">Danish</option>
+      <option value="no">Norwegian</option>
+      <option value="fi">Finnish</option>
+      <option value="cs">Czech</option>
+      <option value="he">Hebrew</option>
+      <option value="ur">Urdu</option>
+      <option value="fa">Persian</option>
+    </select>
+
+    <select id="sel-target-lang"
+            disabled
+            title="Target language is fixed to English in this release. Multi-target translation coming."
+            style="background: var(--surface2); color: var(--text-dim); border: 1px solid var(--border); border-radius: 4px; padding: 5px 6px; font-size: 12px; max-width: 130px; opacity: 0.6; cursor: not-allowed;">
+      <option value="en">→ English</option>
+    </select>
+
+    <select id="sel-engine"
+            title="Translation engine"
+            style="background: var(--surface2); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 5px 6px; font-size: 12px; max-width: 160px;">
+      <!-- populated from /api/engines in api.js -->
+    </select>
+
+    <button id="detectBtn" class="action-btn" disabled title="Generate SRT">Generate SRT</button>
+
+    <button id="fsBtn" class="fs-btn" title="Fullscreen (F)">Fullscreen</button>
+  </div>
+</div>
+
+<!-- Thin hover zone for fullscreen edge-reveal -->
+<div id="navEdgeHotzone" class="nav-edge-hotzone" aria-hidden="true"></div>
+
+<!-- SRT Line Editor Modal -->
+<div id="chapterEditorModal" class="modal-overlay">
+  <div class="modal">
+    <div class="modal-header">Edit SRT Line</div>
+    <div class="modal-body">
+      <div class="modal-field">
+        <label>Start Time (HH:MM:SS.mmm)</label>
+        <input type="text" id="editStartTime" placeholder="00:00:01.225">
+      </div>
+      <div class="modal-field">
+        <label>Start Frame</label>
+        <input type="text" id="editStartFrame" readonly class="readonly">
+      </div>
+      <div class="modal-field">
+        <label>End Time (HH:MM:SS.mmm)</label>
+        <input type="text" id="editEndTime" placeholder="00:00:04.578">
+      </div>
+      <div class="modal-field">
+        <label>End Frame</label>
+        <input type="text" id="editEndFrame" readonly class="readonly">
+      </div>
+      <div class="modal-field">
+        <label>Text</label>
+        <textarea id="editText" rows="3" placeholder="Subtitle text"></textarea>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="modal-btn cancel" id="modalCancel">Cancel</button>
+      <button class="modal-btn save" id="modalSave">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- Split SRT Line Modal -->
+<div id="splitModal" class="modal-overlay">
+  <div class="modal">
+    <div class="modal-header">Split SRT Line</div>
+    <div class="modal-body">
+      <div class="modal-field">
+        <label>Start 1 (HH:MM:SS.mmm)</label>
+        <input type="text" id="splitStart1" placeholder="00:00:01.225">
+      </div>
+      <div class="modal-field">
+        <label>End 1 (HH:MM:SS.mmm)</label>
+        <input type="text" id="splitEnd1" placeholder="00:00:02.500">
+      </div>
+      <div class="modal-field">
+        <label>Text 1</label>
+        <textarea id="splitText1" rows="3" placeholder="First half text"></textarea>
+      </div>
+      <div class="modal-field">
+        <label>Start 2 (HH:MM:SS.mmm)</label>
+        <input type="text" id="splitStart2" placeholder="00:00:02.500">
+      </div>
+      <div class="modal-field">
+        <label>End 2 (HH:MM:SS.mmm)</label>
+        <input type="text" id="splitEnd2" placeholder="00:00:04.578">
+      </div>
+      <div class="modal-field">
+        <label>Text 2</label>
+        <textarea id="splitText2" rows="3" placeholder="Second half text"></textarea>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="modal-btn cancel" id="splitModalCancel">Cancel</button>
+      <button class="modal-btn save" id="splitModalSave">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- Config Editor Modal -->
+<div id="configEditorModal" class="modal-overlay config-modal">
+  <div class="modal">
+    <div class="modal-header">⚙️ Configuration Editor</div>
+    <div class="modal-body" id="configEditorBody">
+      <!-- Config sections will be dynamically populated here -->
+    </div>
+    <div class="modal-footer">
+      <button class="modal-btn cancel" id="configCancel">Cancel</button>
+      <button class="modal-btn" id="configLoad" style="background: var(--surface2); color: var(--text);">Load</button>
+      <button class="modal-btn save" id="configSave">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- Progress Modal -->
+<div id="progressModal" class="modal-overlay">
+  <div class="modal" style="max-width: 480px;">
+    <div class="modal-header" id="progressTitle">Processing...</div>
+    <div class="modal-body">
+      <div id="progressContent">
+        <!-- Processing state -->
+        <div id="progressProcessing">
+          <div id="progressMessage" style="font-size: 14px; color: var(--text); margin-bottom: 16px; font-weight: 500;">Starting...</div>
+          <div style="background: var(--surface2); border-radius: 12px; height: 8px; overflow: hidden; box-shadow: inset 0 1px 3px rgba(0,0,0,0.2);">
+            <div id="progressBar" style="background: linear-gradient(90deg, var(--accent) 0%, #9b6cf8 100%); height: 100%; width: 0%; transition: width 0.3s ease; box-shadow: 0 0 10px rgba(139, 92, 246, 0.4);"></div>
+          </div>
+          <div class="progress-meta-row">
+            <div id="progressElapsed" class="progress-meta-left"></div>
+            <div id="progressPercent" class="progress-meta-center">0%</div>
+            <div id="progressETA" class="progress-meta-right"></div>
+          </div>
+        </div>
+
+        <!-- Success/Error state -->
+        <div id="progressResult" style="display: none;">
+          <div id="progressResultIcon" style="font-size: 48px; text-align: center; margin-bottom: 16px;">✓</div>
+          <div id="progressResultMessage" style="font-size: 14px; color: var(--text); text-align: center; line-height: 1.6; margin-bottom: 24px;"></div>
+          <div style="display: flex; justify-content: center;">
+            <button id="progressCloseBtn" class="modal-btn save" style="min-width: 120px;">Close</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<input type="file" id="videoInput" accept="video/*">
+<input type="file" id="jsonInput" accept=".srt">
+
+<!-- Styled Confirm Modal -->
+<div id="confirmModal" class="modal-overlay">
+  <div class="modal" style="max-width: 420px;">
+    <div class="modal-header" id="confirmModalTitle">Confirm</div>
+    <div class="modal-body">
+      <div id="confirmModalMessage" style="font-size: 14px; color: var(--text); line-height: 1.6;"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="modal-btn cancel" id="confirmModalCancel">Cancel</button>
+      <button class="modal-btn save" id="confirmModalOk">Continue</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(() => {
+{% include 'js/state.js' %}
+{% include 'js/ui.js' %}
+{% include 'js/player.js' %}
+{% include 'js/chapters.js' %}
+{% include 'js/project.js' %}
+{% include 'js/config.js' %}
+{% include 'js/scripts.js' %}
+{% include 'js/api.js' %}
+{% include 'js/init.js' %}
+})();
+</script>
+</body>
+</html>
