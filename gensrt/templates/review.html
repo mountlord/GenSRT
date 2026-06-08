@@ -40,7 +40,13 @@
                disablepictureinpicture
                playsinline
                preload="auto"
-               style="display:none;"></video>
+               style="display:none;">
+          <!-- Subtitle track — sourced from an in-memory VTT blob in project.js.
+               Always reflects the current chaptersArr state, so live edits
+               (Split/Merge/Delete/Edit) are visible in the player immediately.
+               No file-on-disk dependency. -->
+          <track id="subtitleTrack" kind="subtitles" srclang="en" label="Subtitles" default>
+        </video>
 
         <div class="drop-zone-video" id="videoDrop">
           <div class="icon">🎬</div>
@@ -203,6 +209,8 @@
     </select>
 
     <button id="detectBtn" class="action-btn" disabled title="Generate SRT">Generate SRT</button>
+
+    <button id="burnBtn" class="action-btn" disabled title="Burn the loaded SRT into a copy of the video (creates &lt;name&gt;_subbed.mp4 next to the source)">Burn SRT</button>
 
     <button id="fsBtn" class="fs-btn" title="Fullscreen (F)">Fullscreen</button>
   </div>

@@ -148,6 +148,55 @@ def write_srt(subtitles: list, output_path: Path) -> None:
         raise OutputError(f"Cannot write SRT file {output_path}: {exc}") from exc
 
 
+def _fmt_vtt_time(td: datetime.timedelta) -> str:
+    """Format a timedelta as a WebVTT timestamp (``HH:MM:SS.mmm``).
+
+    WebVTT uses ``.`` as the millisecond separator, where SRT uses ``,``.
+    """
+    total = max(0.0, td.total_seconds())
+    h = int(total // 3600)
+    m = int((total % 3600) // 60)
+    s = total - (h * 3600) - (m * 60)
+    # `06.3f` pads to width 6 with leading zero: 5.5 → "05.500".
+    return f"{h:02d}:{m:02d}:{s:06.3f}"
+
+
+def write_vtt(subtitles: list, output_path: Path) -> None:
+    """Serialise *subtitles* to a WebVTT (``.vtt``) file.
+
+    WebVTT is the format HTML5 ``<video>`` elements support natively as a
+    ``<track>`` source, so producing one alongside the SRT lets browsers,
+    Jellyfin, and most modern players use the subtitles without any
+    polyfill.  The cue text and timing are identical to the SRT — only the
+    header (``WEBVTT``) and the timestamp separator (``.`` instead of
+    ``,``) differ.  Cue identifiers (the index numbers in SRT) are
+    omitted; they're optional in WebVTT and most players don't display
+    them.
+
+    Args:
+        subtitles:   List of ``srt.Subtitle`` objects (same input as
+                     :func:`write_srt`).
+        output_path: Destination path (usually the SRT path with the
+                     suffix replaced — ``.srt`` → ``.vtt``).
+
+    Raises:
+        OutputError: If the file cannot be written.
+    """
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        lines = ["WEBVTT", ""]
+        for sub in subtitles:
+            lines.append(f"{_fmt_vtt_time(sub.start)} --> {_fmt_vtt_time(sub.end)}")
+            lines.append(sub.content)
+            lines.append("")
+        output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        logger.info("VTT written: %s  (%d cues)", output_path, len(subtitles))
+    except OSError as exc:
+        raise OutputError(f"Cannot write VTT file {output_path}: {exc}") from exc
+
+
 def segments_from_whisper(raw_segments, index_offset: int = 0) -> list[SRTSegment]:
     """Convert raw faster-whisper segment objects to :class:`SRTSegment` list.
 

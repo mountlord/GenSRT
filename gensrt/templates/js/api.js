@@ -37,7 +37,13 @@ if (deleteBtn) deleteBtn.addEventListener('click', (e) => { e.preventDefault(); 
 // ── Button State Management ───────────────────────────────
 function updateButtonStates() {
   const hasVideoPath = videoPathInput.value.trim().length > 0;
-  detectBtn.disabled      = !hasVideoPath;
+  // currentProjectPath is set whenever an SRT is loaded or saved with a path
+  // (drop, file picker, sidecar discovery, Save, Save As).  It's cleared when
+  // a fresh video is loaded that hasn't been transcribed yet.
+  const hasSrt = !!(typeof currentProjectPath !== 'undefined' && currentProjectPath);
+  detectBtn.disabled = !hasVideoPath;
+  const burnBtn = document.getElementById('burnBtn');
+  if (burnBtn) burnBtn.disabled = !(hasVideoPath && hasSrt);
 }
 
 videoPathInput.addEventListener('input', updateButtonStates);

@@ -415,13 +415,23 @@ videoContainer.addEventListener('drop', (e) => {
 videoDrop.addEventListener('click', () => {
   if (_tilesterDetectPyWebView() && window.pywebview.api && typeof window.pywebview.api.select_video === 'function') {
     window.pywebview.api.select_video().then(path => {
-      if (path) tilesterSetVideoFromPath(path);
+      if (path) window.tilesterSetVideoFromPath(path);
     }).catch(err => { console.error('videoDrop native picker error:', err); });
   } else {
     videoInput.click();
   }
 });
-jsonDrop.addEventListener('click', () => jsonInput.click());
+jsonDrop.addEventListener('click', () => {
+  if (_tilesterDetectPyWebView() && window.pywebview.api && typeof window.pywebview.api.select_srt === 'function') {
+    window.pywebview.api.select_srt().then(path => {
+      if (path && typeof window.gensrtLoadSrtFromPath === 'function') {
+        window.gensrtLoadSrtFromPath(path);
+      }
+    }).catch(err => { console.error('jsonDrop native picker error:', err); });
+  } else {
+    jsonInput.click();
+  }
+});
 
 videoInput.addEventListener('change', (e) => { if (e.target.files[0]) loadVideo(e.target.files[0]); });
 jsonInput.addEventListener('change', (e) => { if (e.target.files[0]) loadJSON(e.target.files[0]); });

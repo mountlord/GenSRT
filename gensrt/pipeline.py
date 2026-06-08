@@ -156,13 +156,22 @@ def run_pipeline(
             should_translate=should_translate,
         )
 
-        # ── Phase 4: Write SRT ────────────────────────────────────────────
+        # ── Phase 4: Write SRT (+ VTT companion) ──────────────────────────
         status("Writing SRT…")
         progress(3, PIPELINE_PHASES)
 
-        from gensrt.srt.builder import build_srt, write_srt
+        from gensrt.srt.builder import build_srt, write_srt, write_vtt
         subtitles = build_srt(srt_segments, max_duration_s=config.max_subtitle_duration_s, min_duration_s=config.min_subtitle_duration_s)
         write_srt(subtitles, output_path)
+
+        # WebVTT companion — same cues, lands next to the SRT (movie.srt
+        # → movie.vtt, movie.ml.srt → movie.ml.vtt).  Non-fatal on failure:
+        # the SRT is what the user asked for, the VTT is a bonus that
+        # makes HTML5 / Jellyfin / browser playback work without a polyfill.
+        try:
+            write_vtt(subtitles, output_path.with_suffix(".vtt"))
+        except Exception as exc:
+            logger.warning("VTT companion write failed (%s) — SRT saved OK.", exc)
 
         # Done — bar to 100%
         progress(PIPELINE_PHASES, PIPELINE_PHASES)

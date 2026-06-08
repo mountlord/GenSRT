@@ -14,6 +14,7 @@ import logging
 import os
 import socket
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -907,11 +908,27 @@ def api_srt_save():
             logger.exception("SRT save failed")
             return jsonify({"status": "error", "message": str(exc)}), 500
 
+        # WebVTT companion — same cues, written next to the SRT.  Non-fatal:
+        # the SRT is the user's primary artifact; failing the whole save
+        # because of a derived-file glitch would be hostile.
+        vtt_path = dest_path.with_suffix(".vtt")
+        vtt_ok = False
+        try:
+            from gensrt.srt.builder import write_vtt
+            write_vtt(subs, vtt_path)
+            vtt_ok = True
+        except Exception as exc:
+            logger.warning("VTT companion write failed (%s) — SRT saved OK.", exc)
+
     return jsonify({
         "status":   "ok",
         "path":     str(dest_path),
+        "vtt_path": str(vtt_path) if vtt_ok else None,
         "count":    len(subs),
-        "message":  f"Wrote {len(subs)} segment(s) to {dest_path.name}.",
+        "message":  (
+            f"Wrote {len(subs)} segment(s) to {dest_path.name}"
+            + (f" + {vtt_path.name}." if vtt_ok else ".")
+        ),
     })
 
 
@@ -971,6 +988,142 @@ def api_video_info():
         "avg_fps":        _parse_rate_to_float(avg_rate or ""),
         "nb_frames":      nb_frames,
         "duration_s":     duration,
+    })
+
+
+@app.route("/api/burn", methods=["POST"])
+def api_burn():
+    """Burn an SRT into a copy of the video using ffmpeg.
+
+    Fire-and-forget: spawns ffmpeg via subprocess.Popen and returns
+    immediately with the output path.  The user can keep working in
+    the app — start another transcribe, load a new video, etc. — while
+    ffmpeg runs in the background.  Closing the app does NOT stop the
+    burn (the child process is detached on Windows via
+    CREATE_NEW_PROCESS_GROUP, and inherits no useful handles on
+    POSIX).
+
+    Body:
+      {
+        "video_path": "/full/path/to/video.mp4",   // required
+        "srt_path":   "/full/path/to/video.ml.srt" // required
+      }
+
+    Output:
+      Always writes to ``<video_stem>_subbed.mp4`` in the same directory
+      as the source video, regardless of the source container.  This
+      gives one consistent, broadly-compatible output format and avoids
+      libavcodec gotchas like "VP9 doesn't fit in mp4" or "libx264
+      doesn't fit in webm".  Existing _subbed.mp4 is overwritten.
+
+    ffmpeg command shape:
+      ffmpeg -y -i <video> -vf subtitles=<srt_basename> \
+             -c:v libx264 -crf 18 -preset medium \
+             -c:a copy <output>
+
+      The ``subtitles`` libavfilter has notoriously brittle path
+      handling on Windows (drive-letter colons, backslashes).  We
+      sidestep by setting cwd to the SRT's parent directory and
+      passing just the basename to the filter.  Absolute paths are
+      fine for ``-i`` and the output argument.
+
+    Returns:
+      200 ``{status: "ok", output_path: "...", pid: N, message: "..."}``
+          on successful spawn (does NOT mean ffmpeg succeeded; just
+          that it started).
+      400 ``{status: "error", message: "..."}`` on bad input.
+      500 ``{status: "error", message: "..."}`` if ffmpeg can't spawn.
+    """
+    body: dict[str, Any] = request.get_json(silent=True) or {}
+
+    video_str = body.get("video_path") or ""
+    srt_str   = body.get("srt_path") or ""
+    if not isinstance(video_str, str) or not video_str.strip():
+        return jsonify({"status": "error", "message": "video_path is required"}), 400
+    if not isinstance(srt_str, str) or not srt_str.strip():
+        return jsonify({"status": "error", "message": "srt_path is required"}), 400
+
+    video_path, err = _validate_readable_path(video_str)
+    if err:
+        return jsonify({"status": "error", "message": f"video_path: {err}"}), 400
+
+    srt_path, err = _validate_readable_path(srt_str)
+    if err:
+        return jsonify({"status": "error", "message": f"srt_path: {err}"}), 400
+    if srt_path.suffix.lower() != ".srt":
+        return jsonify({"status": "error", "message": "srt_path must end in .srt"}), 400
+
+    # Output filename: <video_stem>_subbed.mp4 next to the source.  If that
+    # name is taken (earlier burn, accidental double-click, etc.) auto-version
+    # to <video_stem>_subbed_1.mp4, _subbed_2.mp4, ... so concurrent or
+    # subsequent burns produce distinct files instead of racing on one
+    # output path or silently clobbering the previous burn.
+    base_name = f"{video_path.stem}_subbed"
+    output_path = video_path.with_name(f"{base_name}.mp4")
+    n = 1
+    while output_path.exists():
+        output_path = video_path.with_name(f"{base_name}_{n}.mp4")
+        n += 1
+        if n > 999:  # paranoia bound — never going to hit this realistically
+            return jsonify({
+                "status":  "error",
+                "message": "Too many existing _subbed files; clean up the folder.",
+            }), 500
+
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", str(video_path),
+        "-vf", f"subtitles={srt_path.name}",
+        "-c:v", "libx264", "-crf", "18", "-preset", "medium",
+        "-c:a", "copy",
+        str(output_path),
+    ]
+
+    # Spawn flags so the child survives app close and doesn't pop a
+    # console window on Windows.  No effect on POSIX.
+    popen_kwargs: dict[str, Any] = {
+        "cwd":    str(srt_path.parent),
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+        "stdin":  subprocess.DEVNULL,
+    }
+    if sys.platform.startswith("win"):
+        # CREATE_NEW_PROCESS_GROUP: detach from parent so closing the
+        # app doesn't terminate ffmpeg.  CREATE_NO_WINDOW: don't pop a
+        # console for headless background work.
+        popen_kwargs["creationflags"] = (
+            getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            | getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        )
+    else:
+        popen_kwargs["start_new_session"] = True  # POSIX: setsid()
+
+    try:
+        proc = subprocess.Popen(cmd, **popen_kwargs)
+    except FileNotFoundError:
+        return jsonify({
+            "status": "error",
+            "message": "ffmpeg not found on PATH. Install ffmpeg and try again.",
+        }), 500
+    except OSError as exc:
+        return jsonify({
+            "status": "error",
+            "message": f"Could not start ffmpeg: {exc}",
+        }), 500
+
+    logger.info(
+        "Burn started (pid=%s): %s + %s → %s",
+        proc.pid, video_path.name, srt_path.name, output_path.name,
+    )
+
+    return jsonify({
+        "status":      "ok",
+        "output_path": str(output_path),
+        "pid":         proc.pid,
+        "message":     (
+            f"Burning subtitles... output will appear at {output_path.name} "
+            f"in {output_path.parent}. Closing the app won't stop the burn."
+        ),
     })
 
 
@@ -1168,6 +1321,36 @@ def launch_server(
                     return result[0] if isinstance(result, (list, tuple)) else str(result)
             except Exception:
                 logger.exception("select_video dialog failed")
+            return None
+
+        def select_srt(self) -> str | None:
+            """Open a native file picker restricted to SRT subtitle files.
+
+            Parallel to :meth:`select_video`, used by the click-on-SRT-area
+            handler in player.js.  Native dialogs return the absolute path
+            directly, which the HTML ``<input type="file">`` fallback can't
+            do reliably in pywebview (File objects don't expose
+            ``pywebviewFullPath``), so we need this dedicated entry point to
+            make sibling-video discovery work for the file-picker path.
+
+            Returns the full filesystem path or ``None`` if cancelled.
+            """
+            if not getattr(self, "_window", None):
+                return None
+            file_types = (
+                "Subtitle files (*.srt)",
+                "All files (*.*)",
+            )
+            try:
+                result = self._window.create_file_dialog(
+                    _DLG_OPEN,
+                    allow_multiple=False,
+                    file_types=file_types,
+                )
+                if result:
+                    return result[0] if isinstance(result, (list, tuple)) else str(result)
+            except Exception:
+                logger.exception("select_srt dialog failed")
             return None
 
         def open_url(self, url: str) -> None:

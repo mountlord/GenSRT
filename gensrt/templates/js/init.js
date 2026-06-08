@@ -34,6 +34,60 @@ detectBtn.addEventListener('click', () => {
   }
 });
 
+// ── Burn Subtitles (fire-and-forget ffmpeg) ───────────────
+const burnBtn = document.getElementById('burnBtn');
+if (burnBtn) {
+  burnBtn.addEventListener('click', async () => {
+    if (!isServerMode) {
+      showErrorDialog('Server Mode Required',
+        'Burn requires server mode. Run: <span style="font-family: var(--font-mono);">gensrt</span>');
+      return;
+    }
+    const videoPath = (videoPathInput && videoPathInput.value || '').trim();
+    const srtPath   = (typeof currentProjectPath !== 'undefined') ? (currentProjectPath || '') : '';
+    if (!videoPath || !srtPath) {
+      showErrorDialog('Burn Unavailable',
+        'Burn needs both a video and a loaded SRT.<br><br>' +
+        'Generate or load an SRT first, then try again.');
+      return;
+    }
+
+    burnBtn.disabled = true;
+    const origText   = burnBtn.textContent;
+    burnBtn.textContent = 'Burning…';
+    try {
+      const resp = await fetch('/api/burn', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ video_path: videoPath, srt_path: srtPath }),
+      });
+      const j = await resp.json().catch(() => ({}));
+      if (!resp.ok || j.status !== 'ok') {
+        showErrorDialog('Burn Failed',
+          (j && j.message) ? j.message : `HTTP ${resp.status}`);
+        return;
+      }
+      // Fire-and-forget — the spawn succeeded; ffmpeg is now running in the
+      // background.  We don't track its exit code.  User keeps working.
+      // showInfoDialog (not showProgressSuccess) — the latter only updates
+      // an already-visible modal's contents; we need the modal to actually
+      // open here since there was no preceding processing phase.
+      showInfoDialog('Burn started',
+        (j.message || 'Burning subtitles in the background.') +
+        (j.output_path
+          ? `<br><br><small style="opacity:0.7;font-family:var(--font-mono);">${j.output_path}</small>`
+          : ''));
+    } catch (err) {
+      console.error('Burn request failed:', err);
+      showErrorDialog('Burn Failed', err.message || String(err));
+    } finally {
+      burnBtn.textContent = origText;
+      // Re-evaluate state (will re-enable since video + SRT haven't changed).
+      if (typeof updateButtonStates === 'function') updateButtonStates();
+    }
+  });
+}
+
 // ── Save The Children ─────────────────────────────────────
 const stcBtn = document.getElementById('stcBtn');
 if (stcBtn) {

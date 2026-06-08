@@ -33,8 +33,7 @@ just about anything else that plays video.
 Two options:
 
 **Option 1 — Use the standalone build.**
-If your friend who sent you here also sent you a `gensrt.exe` (or a
-zipped folder containing it), just run that. No Python required. The
+Run the installer from https://github.com/mountlord/GenSRT/releases. No Python required. The
 first run will take a few minutes to download Whisper model weights
 (~800 MB) — subsequent launches are instant.
 
@@ -267,6 +266,3 @@ Raise `vad_threshold` in Config → VAD & Subtitle Timing. Default is
 ## Getting help
 
 For deeper tuning and CLI usage, see [README.md](README.md).
-
-For issues, send a screenshot or copy of the log output to whoever
-sent you the app.

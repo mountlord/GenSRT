@@ -162,6 +162,12 @@ function renderLinks(data) {
 
   linkCount.textContent = `${chapters.length}`;
   renderChapterTimeline(chapters);
+
+  // Refresh the in-player subtitle <track> from the (now-current) chaptersArr.
+  // This is the single chokepoint that catches Load, Edit-save, Split, Merge,
+  // and Delete — every SRT mutation re-renders the right pane, so every
+  // mutation also re-syncs the player's subtitle track.
+  if (typeof _refreshSubtitleTrack === 'function') _refreshSubtitleTrack();
 }
 
 // ── Chapter Editor ────────────────────────────────────────
@@ -512,6 +518,17 @@ function mergeAdjacentSegments() {
   const merged       = { ...left };
   merged.start_time  = Number(left.start_time);
   merged.end_time    = Number(right.end_time);
+  // Combine text from BOTH segments — without this the right segment's
+  // content was silently discarded.  Newline separator preserves the
+  // visual two-line layout (SRT and WebVTT both support multi-line cues);
+  // user can flatten to a single line via the Edit modal if desired.
+  const leftText  = String(left.text  || '').replace(/\s+$/, '');
+  const rightText = String(right.text || '').replace(/^\s+/, '');
+  if (leftText && rightText) {
+    merged.text = leftText + '\n' + rightText;
+  } else {
+    merged.text = leftText || rightText;
+  }
   if (fps && isFinite(fps)) {
     merged.start_frame = frameAtTime(merged.start_time);
     merged.end_frame   = frameAtTime(merged.end_time);

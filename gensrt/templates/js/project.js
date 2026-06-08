@@ -34,11 +34,109 @@ function _applySrtPayload(payload, srtPath) {
   renderLinks({ chapters: segments });
   try { jsonDrop.style.display    = 'none'; } catch {}
   try { navContainer.style.display = 'block'; } catch {}
+  if (typeof updateButtonStates === 'function') updateButtonStates();
 }
+
+// ── In-player subtitle track (WebVTT blob) ────────────────
+//
+// The video element has a hidden <track> child.  We feed it a fresh
+// WebVTT blob URL whenever the SRT data changes — load, Edit, Split,
+// Merge, Delete.  Hook is _refreshSubtitleTrack(), called from
+// renderLinks (chapters.js) so every mutation flows through it.
+//
+// Why a blob, not the on-disk .vtt?  Edits aren't persisted to disk
+// until the user hits Save; pointing the track at <video>.vtt would
+// show stale subtitles after every edit.  An in-memory VTT mirrors
+// chaptersArr exactly, so the player always shows what's in the
+// editor.
+//
+// VTT format mirrors gensrt/srt/builder.py write_vtt() — same
+// HH:MM:SS.mmm timestamp format, no cue identifiers, blank line
+// between cues.
+
+let _subtitleBlobUrl = null;
+
+function _formatVttTime(seconds) {
+  const total = Math.max(0, Number(seconds) || 0);
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total - (h * 3600) - (m * 60);
+  // Pad seconds to 6 chars total (e.g. 05.500), with 3 decimal places.
+  const sStr = s.toFixed(3);
+  const sPadded = sStr.length < 6 ? '0'.repeat(6 - sStr.length) + sStr : sStr;
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${sPadded}`;
+}
+
+function _buildVttFromSegments(segments) {
+  if (!Array.isArray(segments) || !segments.length) return '';
+  const lines = ['WEBVTT', ''];
+  for (const seg of segments) {
+    const start = Number(seg.start_time);
+    const end   = Number(seg.end_time);
+    if (!isFinite(start) || !isFinite(end) || !(end > start)) continue;
+    // "-->" inside cue text breaks the WebVTT parser; replace with a
+    // visually-similar Unicode arrow if it ever appears in transcribed
+    // subtitle text (rare, but defensive).
+    const text = String(seg.text || '').replace(/-->/g, '→→');
+    lines.push(`${_formatVttTime(start)} --> ${_formatVttTime(end)}`);
+    lines.push(text);
+    lines.push('');
+  }
+  return lines.join('\n') + '\n';
+}
+
+function _refreshSubtitleTrack() {
+  const trackEl = document.getElementById('subtitleTrack');
+  const playerEl = document.getElementById('player');
+  if (!trackEl || !playerEl) return;
+
+  const segs = (typeof chaptersArr !== 'undefined' && Array.isArray(chaptersArr))
+    ? chaptersArr
+    : [];
+  const vttText = _buildVttFromSegments(segs);
+
+  // Always revoke the previous URL — even if we're about to create a new
+  // one, the old one is no longer referenced by anything.
+  if (_subtitleBlobUrl) {
+    try { URL.revokeObjectURL(_subtitleBlobUrl); } catch {}
+    _subtitleBlobUrl = null;
+  }
+
+  if (!vttText) {
+    trackEl.removeAttribute('src');
+    return;
+  }
+
+  const blob = new Blob([vttText], { type: 'text/vtt' });
+  _subtitleBlobUrl = URL.createObjectURL(blob);
+  trackEl.src = _subtitleBlobUrl;
+
+  // Browsers default new TextTracks to 'disabled' even with the `default`
+  // attribute set when src changes dynamically.  Force 'showing' so cues
+  // render in the player.
+  try {
+    if (trackEl.track) trackEl.track.mode = 'showing';
+  } catch {}
+}
+
+window._refreshSubtitleTrack = _refreshSubtitleTrack;
+
+// When a new video loads, the <track> element re-attaches but the
+// TextTrack mode often resets to 'disabled'.  Re-apply on loadedmetadata
+// so cues continue to render after a video swap.
+(function installTrackRefreshOnVideoLoad() {
+  const playerEl = document.getElementById('player');
+  if (!playerEl) return;
+  playerEl.addEventListener('loadedmetadata', () => {
+    // Defer to next tick so the browser finishes its own track reset
+    // before we override mode='showing'.
+    setTimeout(_refreshSubtitleTrack, 0);
+  });
+})();
 
 // ── Load SRT from an absolute path (via the server) ───────
 async function loadSrtFromPath(srtPath, options = {}) {
-  const { quiet = false } = options;
+  const { quiet = false, skipSiblingVideo = false } = options;
   if (!srtPath) return false;
   try {
     const resp = await fetch(`/api/srt?path=${encodeURIComponent(srtPath)}`);
@@ -51,6 +149,18 @@ async function loadSrtFromPath(srtPath, options = {}) {
     }
     const data = await resp.json();
     _applySrtPayload(data, srtPath);
+    // Chain to sibling video if the server found one and it differs from
+    // what's currently loaded.  Suppressed via skipSiblingVideo for callers
+    // that have a reason not to (e.g. tests, or future sidecar flows that
+    // already loaded the video first).
+    if (!skipSiblingVideo && data.sibling_video) {
+      const currentVideo = (typeof videoPathInput !== 'undefined' && videoPathInput
+        ? (videoPathInput.value || '').trim()
+        : '');
+      if (data.sibling_video !== currentVideo) {
+        window.tilesterSetVideoFromPath(data.sibling_video);
+      }
+    }
     return true;
   } catch (err) {
     console.error('loadSrtFromPath failed:', err);
@@ -104,43 +214,20 @@ window.gensrtLoadSrtFromVideo = loadSrtFromVideo;
 // change handler.  We keep the function name but:
 //
 //   • In pywebview mode, the File object exposes its absolute path via
-//     ``file.pywebviewFullPath``.  We route through the server (/api/srt),
-//     which also returns any sibling video path.  If a sibling video is
-//     present and different from what's currently loaded, we set it via
-//     window.tilesterSetVideoFromPath — the sidecar hook then re-applies
-//     this SRT.  (The minor cost of loading the SRT twice is the price of
-//     a single straight-through code path; user-initiated file pick is
-//     rare enough that the extra round-trip is fine.)
+//     ``file.pywebviewFullPath``.  We delegate to loadSrtFromPath which
+//     handles the server round-trip AND chains to any sibling video the
+//     server discovers.  Note that File objects from <input type="file">
+//     elements DON'T expose pywebviewFullPath (only drag-drop events do),
+//     so this branch only fires for the drop path.  The click-on-pane
+//     path goes through select_srt() instead — see player.js.
 //
-//   • In browser mode, ``pywebviewFullPath`` is undefined and we have no
-//     way to ask the server about the file's location.  Fall back to the
-//     client-side parse that's been there since Drop H.
+//   • In browser mode (and for File objects without pywebviewFullPath),
+//     we fall back to a naive client-side parse with no sibling-video
+//     discovery — there's no path to ask the server about.
 function loadJSON(file) {
   const fullPath = file && file.pywebviewFullPath;
   if (fullPath) {
-    // pywebview path-aware load — uses /api/srt and picks up any sibling video.
-    (async () => {
-      try {
-        const resp = await fetch(`/api/srt?path=${encodeURIComponent(fullPath)}`);
-        if (!resp.ok) {
-          const j = await resp.json().catch(() => ({}));
-          showErrorDialog('SRT Load Failed', j.error || `HTTP ${resp.status}`);
-          return;
-        }
-        const data = await resp.json();
-        _applySrtPayload(data, fullPath);
-        // Chain to sibling video if found and not already loaded.
-        if (data.sibling_video) {
-          const currentVideo = (videoPathInput && videoPathInput.value || '').trim();
-          if (data.sibling_video !== currentVideo) {
-            window.tilesterSetVideoFromPath(data.sibling_video);
-          }
-        }
-      } catch (err) {
-        console.error('loadJSON (pywebview path mode) failed:', err);
-        showErrorDialog('SRT Load Failed', err.message || String(err));
-      }
-    })();
+    loadSrtFromPath(fullPath);
     return;
   }
 
@@ -344,6 +431,7 @@ async function saveProject() {
     if (!resp.ok || j.status !== 'ok') throw new Error(j && j.message ? j.message : `HTTP ${resp.status}`);
 
     if (j.path) currentProjectPath = normalizeFullPath(j.path);
+    if (typeof updateButtonStates === 'function') updateButtonStates();
     showProgressSuccess('Saved',
       `Saved: <span style="font-family: var(--font-mono);">${j.path}</span><br>` +
       `<small>${j.count} segment(s)</small>`);
@@ -417,6 +505,7 @@ async function saveProjectAs() {
     if (!resp.ok || j.status !== 'ok') throw new Error(j && j.message ? j.message : `HTTP ${resp.status}`);
 
     if (j.path) currentProjectPath = normalizeFullPath(j.path);
+    if (typeof updateButtonStates === 'function') updateButtonStates();
     showProgressSuccess('Saved',
       `Saved: <span style="font-family: var(--font-mono);">${j.path}</span><br>` +
       `<small>${j.count} segment(s)</small>`);
