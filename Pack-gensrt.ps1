@@ -44,6 +44,36 @@ foreach ($path in @(".\build", ".\dist", ".\gensrt.spec")) {
     }
 }
 
+# ── Pre-flight: bundled binaries must be present ───────────────────────────
+#
+# GenSRT bundles ffmpeg.exe + ffprobe.exe in gensrt\bin\ so end users don't
+# need to install ffmpeg.  If they're missing, the installer would ship
+# broken — better to fail here than at user launch time.
+
+Write-Host ""
+Write-Host "Checking bundled binaries..." -ForegroundColor Yellow
+$missingBinaries = @()
+foreach ($binary in @("ffmpeg.exe", "ffprobe.exe")) {
+    $path = ".\gensrt\bin\$binary"
+    if (-not (Test-Path $path)) {
+        $missingBinaries += $binary
+    } else {
+        $size = [math]::Round((Get-Item $path).Length / 1MB, 1)
+        Write-Host "  - gensrt\bin\$binary ($size MB)" -ForegroundColor Gray
+    }
+}
+if ($missingBinaries.Count -gt 0) {
+    Write-Host ""
+    Write-Host "ERROR: Missing bundled binaries in gensrt\bin\:" -ForegroundColor Red
+    foreach ($b in $missingBinaries) { Write-Host "  - $b" -ForegroundColor Red }
+    Write-Host ""
+    Write-Host "Download ffmpeg-release-essentials.7z from:" -ForegroundColor Yellow
+    Write-Host "  https://www.gyan.dev/ffmpeg/builds/" -ForegroundColor Gray
+    Write-Host "and copy ffmpeg.exe and ffprobe.exe from its bin\ folder" -ForegroundColor Yellow
+    Write-Host "into gensrt\bin\.  Then re-run this script." -ForegroundColor Yellow
+    exit 1
+}
+
 # ── Build ──────────────────────────────────────────────────────────────────
 
 Write-Host ""
@@ -55,6 +85,7 @@ pyinstaller --noconfirm --clean --onedir --name gensrt `
     `
     --add-data "gensrt\static;gensrt\static" `
     --add-data "gensrt\templates;gensrt\templates" `
+    --add-data "gensrt\bin;gensrt\bin" `
     `
     --hidden-import=flask `
     --hidden-import=flask.json `
@@ -116,6 +147,17 @@ if (Test-Path ".\README.md") {
     Write-Host "  - README.md copied" -ForegroundColor Gray
 }
 
+# User Guide — self-contained HTML (embedded CSS + base64 images).
+# Opens in any browser; no Word, no internet, no plugins required.
+if (Test-Path ".\user_guide.html") {
+    Copy-Item ".\user_guide.html" ".\dist\gensrt\user_guide.html" -Force
+    $ugSize = [math]::Round((Get-Item ".\user_guide.html").Length / 1KB, 1)
+    Write-Host "  - user_guide.html copied (${ugSize} KB)" -ForegroundColor Gray
+} else {
+    Write-Host "  - user_guide.html not found" -ForegroundColor Yellow
+}
+
+
 # ── Size report ────────────────────────────────────────────────────────────
 
 Write-Host ""
@@ -159,5 +201,6 @@ Write-Host "Notes:" -ForegroundColor Yellow
 Write-Host "  - Whisper model (~800MB) downloads on first run to:" -ForegroundColor Gray
 Write-Host "    %USERPROFILE%\.cache\huggingface\hub" -ForegroundColor Gray
 Write-Host "  - CUDA 12.8 runtime must be installed on the target machine" -ForegroundColor Gray
-Write-Host "  - FFmpeg must be on PATH on the target machine" -ForegroundColor Gray
+Write-Host "  - FFmpeg is bundled (gensrt\bin\ffmpeg.exe + ffprobe.exe);" -ForegroundColor Gray
+Write-Host "    no separate install needed on target machines." -ForegroundColor Gray
 Write-Host ""

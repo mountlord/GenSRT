@@ -147,6 +147,13 @@ venv.bak/
 
 # Custom
 SrtTest/
+GitShouldNotSee/
+*.bak
+
+# Bundled ffmpeg/ffprobe — copy these from a gyan.dev essentials build
+# into gensrt/bin/ before running Pack-gensrt.ps1.  Not tracked in git
+# (~200MB) but required at packaging time.
+gensrt/bin/*.exe
 
 
 # Spyder project settings

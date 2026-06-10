@@ -947,15 +947,21 @@ def api_video_info():
     if err:
         return jsonify({"error": err}), 400
 
+    from gensrt.ffmpeg_util import get_ffprobe_exe, get_subprocess_creationflags
+
     cmd = [
-        "ffprobe", "-v", "error", "-select_streams", "v:0",
+        get_ffprobe_exe(), "-v", "error", "-select_streams", "v:0",
         "-show_entries", "stream=r_frame_rate,avg_frame_rate,nb_frames,duration",
         "-of", "default=nw=1", str(video_path),
     ]
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+        proc = subprocess.run(
+            cmd, capture_output=True, text=True,
+            encoding="utf-8", errors="replace",
+            creationflags=get_subprocess_creationflags(),
+        )
     except FileNotFoundError:
-        return jsonify({"error": "ffprobe not found on PATH"}), 500
+        return jsonify({"error": "ffprobe not found (bundled binary missing and not on PATH)"}), 500
     if proc.returncode != 0:
         return jsonify({"error": "ffprobe failed", "stderr": (proc.stderr or "").strip()}), 500
 
@@ -1070,8 +1076,10 @@ def api_burn():
                 "message": "Too many existing _subbed files; clean up the folder.",
             }), 500
 
+    from gensrt.ffmpeg_util import get_ffmpeg_exe
+
     cmd = [
-        "ffmpeg", "-y",
+        get_ffmpeg_exe(), "-y",
         "-i", str(video_path),
         "-vf", f"subtitles={srt_path.name}",
         "-c:v", "libx264", "-crf", "18", "-preset", "medium",

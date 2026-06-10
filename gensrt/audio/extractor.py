@@ -52,6 +52,8 @@ def extract_audio(
             "ffmpeg-python is not installed. Run: pip install ffmpeg-python",
         ) from exc
 
+    from gensrt.ffmpeg_util import get_ffmpeg_exe
+
     input_path = Path(input_path).resolve()
 
     # Create a named temp file — keep it around until the caller deletes it.
@@ -84,7 +86,7 @@ def extract_audio(
                 acodec="pcm_s16le",
             )
             .overwrite_output()
-            .run(quiet=True)
+            .run(quiet=True, cmd=get_ffmpeg_exe())
         )
     except ffmpeg.Error as exc:
         # Clean up temp file on failure

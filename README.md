@@ -4,18 +4,19 @@ GPU-accelerated subtitle (SRT) generation using OpenAI Whisper, with any-to-any
 translation via Google Translate (or X-to-English via Meta NLLB-200 / Helsinki
 MarianMT). Ships with both a desktop GUI for editing and a CLI for batch jobs.
 
-> **New here?** If you just want to make subtitles for a video using the
-> desktop app, see the [User Guide](USER_GUIDE.md). This README is the
-> reference for the CLI, configuration knobs, and tuning parameters.
+> **New here?** Looking for help using the desktop app? Open `user_guide.html`
+> (included in every GenSRT install — it opens in your browser). This README
+> is the reference for the CLI, configuration knobs, and tuning parameters.
 
 ---
 
 ## Requirements
 
-- Python 3.10+
+- Python 3.10+ (only needed if installing from source — see *Installation*)
 - NVIDIA GPU with CUDA 12.8 (CPU fallback available, significantly slower)
-- FFmpeg on system PATH
 - Internet connection for Google translation (first Whisper model download also requires internet)
+
+FFmpeg is bundled — no separate install needed.
 
 ---
 
@@ -75,12 +76,25 @@ Changes here don't touch the config file.
 
 **Editing**
 
+The editor's video player shows your current subtitles as you edit — every
+Split, Merge, Delete, or text change is reflected in the player immediately.
+No need to save and re-open in a separate player to check your work.
+
 - Click any row in the right pane → seeks the video to that line and pauses
 - Check a row's checkbox + click *Split* → opens the split editor with two halves
+- Check two adjacent rows + click *Merge* → combines them into one (texts joined newline-separated)
 - Click *Edit* on a row → opens a modal to fix text or timestamps
 - *Delete* removes the selected line(s)
-- *Save* writes back to the loaded `.srt`
+- *Save* writes back to the loaded `.srt` (and the matching `.vtt`)
 - *Save As* writes to a chosen path (next Save will go to that path)
+
+**Burn SRT** — bakes the loaded subtitles into a copy of the video, producing
+a standalone `.mp4` with the subtitles permanently visible (no separate
+subtitle track needed). The button is in the footer; it's disabled until
+both a video and an SRT are loaded. Burn runs ffmpeg in the background and
+returns control to the app immediately — you can keep working while it
+finishes. Output: `<video>_subbed.mp4` next to the source; subsequent burns
+auto-version to `_subbed_1.mp4`, `_subbed_2.mp4`, etc.
 
 **Config modal**
 
@@ -155,15 +169,19 @@ footer.
 
 ## Output file naming
 
-Plex / Jellyfin / Kodi compatible:
+GenSRT writes two files per transcription, both Plex / Jellyfin / Kodi compatible:
 
-| Target language | Output file |
-|---|---|
-| English (default) | `video.srt` |
-| Malayalam | `video.ml.srt` |
-| Korean | `video.ko.srt` |
-| Japanese | `video.ja.srt` |
-| (any other ISO 639-1) | `video.<lang>.srt` |
+| Target language | SRT file | VTT file (companion) |
+|---|---|---|
+| English (default) | `video.srt` | `video.vtt` |
+| Malayalam | `video.ml.srt` | `video.ml.vtt` |
+| Korean | `video.ko.srt` | `video.ko.vtt` |
+| Japanese | `video.ja.srt` | `video.ja.vtt` |
+| (any other ISO 639-1) | `video.<lang>.srt` | `video.<lang>.vtt` |
+
+The `.vtt` is identical content to the `.srt` in WebVTT format, suitable for
+HTML5 `<video>` elements as a `<track>` source — useful if you're embedding
+the video in a webpage or working with players that prefer VTT.
 
 English stays unsuffixed for backward compatibility with existing libraries.
 Multiple language SRTs coexist next to the same video and are recognised as
@@ -370,20 +388,65 @@ Subsequent runs use the cached weights and start immediately.
 
 Output: `.\dist\gensrt\gensrt.exe`
 
+Before the first pack, drop `ffmpeg.exe` and `ffprobe.exe` (from the
+gyan.dev "essentials" build at https://www.gyan.dev/ffmpeg/builds/) into
+`gensrt\bin\`. The pack script verifies they're present and fails loudly
+if either is missing.
+
 The packaged executable does not bundle the Whisper model weights — they're
-downloaded on first run as above. FFmpeg and CUDA 12.8 must be installed on
-the target machine.
+downloaded on first run as above. CUDA 12.8 must be installed on the
+target machine.
+
+---
+
+## Known Limitations
+
+GenSRT is a draft tool for serious subtitle work. The AI does the heavy
+lifting; you polish the result. A few things to know:
+
+- **Indic-language source audio** — Whisper struggles with fast, dense
+  speech in Indian languages, particularly news broadcasts with English
+  code-switching. Output may contain hallucinated content that reads
+  fluently but doesn't match the audio. For these cases, generate a draft
+  and verify against the audio before publishing. (Better Indic
+  transcription is planned for version 1.2.)
+- **Code-switching audio** — recordings that mix multiple languages
+  (e.g., English-heavy Hindi conversations) may produce inconsistent
+  script output.
+- **Music-heavy content** — Whisper occasionally hallucinates subtitles
+  over long musical passages. Use the editor to remove them.
+- **Speaker overlap** — overlapping speech from multiple speakers is
+  transcribed as a single segment without speaker attribution.
+- **Long videos** — for videos over 60 minutes, monitor VRAM usage;
+  consider splitting first if memory becomes an issue.
 
 ---
 
 ## Roadmap
 
-- **WebVTT output alongside SRT** — `.vtt` is the format HTML5 `<video>`
-  elements natively support as a `<track>`. Generating both formats from the
-  same transcription would let the GUI player show subtitles inline without a
-  polyfill, and would make the output usable in browsers and most modern
-  players directly.
+- **IndicConformer ASR engine** for Indian-language source audio (v1.2) —
+  alternative ASR engine that handles fast, dense Indic speech significantly
+  better than Whisper, with VAD-based chunking and per-region timestamp
+  assembly. See *Known Limitations* above for the current state.
 - **`--target-language` CLI flag** — currently target language is set via the
   config file or the GUI footer. A direct flag would round out the CLI
   surface for batch jobs that want per-language output without writing a
   config.
+
+---
+
+## What's new
+
+- WebVTT output written alongside every SRT — `.vtt` works in HTML5
+  `<video>` elements natively as a `<track>` source
+- Live in-player subtitle display while editing — every Split, Merge,
+  Delete, or text edit shows in the player immediately
+- Burn-in subtitles — bake subtitles into a copy of the video with one
+  click, runs in the background
+- Bundled ffmpeg — no separate install required on target machines
+- Any-to-any translation via Google Translate (Korean → Malayalam,
+  Japanese → Tamil, etc.)
+- Plex / Jellyfin / Kodi compatible filename suffixes
+- Self-contained `user_guide.html` shipped alongside the executable
+- Documented known limitations for transparency about what the tool
+  does and doesn't do well

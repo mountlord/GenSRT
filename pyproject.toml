@@ -36,6 +36,7 @@ gensrt = [
     "static/*",
     "templates/*",
     "templates/js/*",
+    "bin/*",
 ]
 
 [tool.ruff]
