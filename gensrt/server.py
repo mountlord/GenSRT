@@ -524,7 +524,10 @@ def api_transcribe():
 _MODEL_CHOICES = {
     "tiny", "base", "small", "medium", "large",
     "large-v1", "large-v2", "large-v3", "large-v3-turbo",
-}
+}  # kept for legacy reference; runtime validation is now permissive
+   # (see _v_str on the "model" field).  The dropdown options are sourced
+   # from /api/known_models, which merges these built-ins with the user's
+   # gensrt-known-models.json side file.
 _COMPUTE_CHOICES = {"float32", "float16", "int8_float16", "int8"}
 _DEVICE_CHOICES = {"cuda", "cpu", "auto"}
 _BACKEND_CHOICES = {"cuda", "rocm", "xpu", "cpu"}
@@ -573,7 +576,7 @@ def _v_str_or_null(x):
 
 _CONFIG_VALIDATORS = {
     # Transcription
-    "model":                   _v_str_in(_MODEL_CHOICES),
+    "model":                   _v_str,
     "device":                  _v_str_in(_DEVICE_CHOICES),
     "compute_type":            _v_str_in(_COMPUTE_CHOICES),
     "backend":                 _v_str_in(_BACKEND_CHOICES),
@@ -737,6 +740,131 @@ def api_engines():
     """Return available translation engines."""
     from gensrt.translation.factory import available_engines
     return jsonify({"engines": available_engines()})
+
+
+# ── Custom Whisper models (Drop I.14.7) ───────────────────────────────────
+#
+# The user can run any faster-whisper-compatible Whisper model — built-in
+# names ("large-v3-turbo"), HuggingFace repo IDs ("smcproject/vegam-..."),
+# or local paths.  The footer model dropdown is populated from:
+#
+#   built-in recommended (gensrt.known_models.BUILTIN_RECOMMENDED)
+#       + user-added (gensrt-known-models.json side file)
+#
+# A user can add new models via the "New…" sentinel in the dropdown or
+# from the Config modal.  The /api/validate_model endpoint does a light
+# HuggingFace metadata check (no weights download) so typos surface
+# before the first transcribe call.
+
+@app.route("/api/known_models", methods=["GET"])
+def api_known_models():
+    """Return the merged list of selectable Whisper model names.
+
+    Built-in recommended models first, then user-added models from
+    ``gensrt-known-models.json``.  Always returns at least the built-ins.
+    """
+    from gensrt.known_models import get_combined_models
+    try:
+        models = get_combined_models()
+    except Exception as exc:
+        logger.warning("known_models load failed: %s", exc)
+        from gensrt.known_models import BUILTIN_RECOMMENDED
+        models = list(BUILTIN_RECOMMENDED)
+    return jsonify({"models": models})
+
+
+@app.route("/api/validate_model", methods=["POST"])
+def api_validate_model():
+    """Light validation of a Whisper model name.
+
+    Performs a metadata-only HuggingFace API check — does NOT download
+    weights.  Catches typos and access errors cheaply (1-2 seconds).
+    Does NOT guarantee the model is faster-whisper compatible; the real
+    test only happens at transcribe time.
+
+    Request body: ``{"model": "org/repo-name"}``
+    Response: ``{"status": "ok"}`` on success,
+              ``{"status": "error", "message": "..."}`` otherwise.
+    """
+    from gensrt.known_models import BUILTIN_RECOMMENDED
+    body = request.get_json(silent=True) or {}
+    name = (body.get("model") or "").strip()
+
+    if not name:
+        return jsonify({"status": "error",
+                        "message": "Model name is empty."}), 400
+
+    # Built-in short names skip the network round-trip.
+    if name in BUILTIN_RECOMMENDED:
+        return jsonify({"status": "ok",
+                        "message": f"'{name}' is a built-in Whisper model."})
+
+    # Local paths skip the network round-trip too.
+    p = Path(name)
+    if p.exists() and p.is_dir():
+        return jsonify({"status": "ok",
+                        "message": f"Local model directory found: {p}"})
+
+    # HuggingFace metadata check: GET /api/models/<repo>.  This returns
+    # JSON metadata if the repo exists and is accessible to the current
+    # auth token (or public).  We deliberately do NOT load weights.
+    import urllib.request
+    import urllib.error
+    import json as _json
+
+    url = f"https://huggingface.co/api/models/{name}"
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "GenSRT/1.x"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            payload = _json.loads(resp.read().decode("utf-8"))
+        # Sanity: a real model card has a "modelId" or "id" field.
+        if not isinstance(payload, dict) or not (payload.get("modelId") or payload.get("id")):
+            return jsonify({"status": "error",
+                            "message": "Response did not look like a model card."}), 400
+        return jsonify({"status": "ok",
+                        "message": f"Found '{name}' on HuggingFace."})
+    except urllib.error.HTTPError as exc:
+        if exc.code == 401 or exc.code == 403:
+            msg = (f"'{name}' exists but requires authentication. "
+                   "Run `hf auth login` and request access on the model page.")
+        elif exc.code == 404:
+            msg = f"'{name}' was not found on HuggingFace."
+        else:
+            msg = f"HuggingFace returned HTTP {exc.code}."
+        return jsonify({"status": "error", "message": msg}), 400
+    except urllib.error.URLError as exc:
+        return jsonify({"status": "error",
+                        "message": f"Network error contacting HuggingFace: {exc.reason}"}), 400
+    except Exception as exc:
+        return jsonify({"status": "error",
+                        "message": f"Validation failed: {exc}"}), 400
+
+
+@app.route("/api/add_known_model", methods=["POST"])
+def api_add_known_model():
+    """Append a model name to the user's side file.
+
+    Idempotent — adding an existing name is a no-op.  Built-in names are
+    silently dropped (they're always offered regardless).
+
+    Request body: ``{"model": "org/repo-name"}``
+    Response: ``{"status": "ok", "models": [...combined list...]}``
+    """
+    from gensrt.known_models import add_known_model, get_combined_models
+
+    body = request.get_json(silent=True) or {}
+    name = (body.get("model") or "").strip()
+
+    if not name:
+        return jsonify({"status": "error",
+                        "message": "Model name is empty."}), 400
+
+    try:
+        add_known_model(name)
+        return jsonify({"status": "ok", "models": get_combined_models()})
+    except OSError as exc:
+        return jsonify({"status": "error",
+                        "message": f"Could not write known-models file: {exc}"}), 500
 
 
 # ── Drop history (no stubs remain) ────────────────────────────────────────

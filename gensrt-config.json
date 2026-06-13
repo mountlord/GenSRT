@@ -3,7 +3,7 @@
   "output_filename": null,
   "recurse": false,
   "log_level": "INFO",
-  "model": "large-v3-turbo",
+  "model": "smcproject/vegam-whisper-medium-ml-int8_float16",
   "device": "cuda",
   "compute_type": "float16",
   "gpu_id": 0,

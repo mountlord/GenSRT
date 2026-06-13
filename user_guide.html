@@ -287,7 +287,7 @@ SRT</em> run will work:</p>
 <tbody>
 <tr><td>Source language</td><td>What language the audio is in (<code>Auto-detect</code> lets Whisper figure it out)</td></tr>
 <tr><td>Target language</td><td>What language to translate the subtitles into</td></tr>
-<tr><td>Translation engine</td><td>Which service does the translation (Google is the default, recommended for non-English targets)</td></tr>
+<tr><td>Model</td><td>Which Whisper model to use.  Includes built-in sizes (tiny through large-v3-turbo) and any custom models you've added.  Pick <em>New…</em> to add a custom HuggingFace model.  See <em>Using a custom model</em> below.</td></tr>
 <tr><td>VAD On/Off</td><td>Voice Activity Detection — filters out silence before transcription. Usually leave on.</td></tr>
 <tr><td>Generate SRT</td><td>The big button. Starts the transcription job.</td></tr>
 <tr><td>Burn SRT</td><td>Bakes the loaded subtitles into a copy of the video. See <em>Burning subtitles into the video</em> below.</td></tr>
@@ -533,6 +533,44 @@ Generate output.</li>
 Config modal, the footer selectors update immediately — no need
 to relaunch.</li>
 </ul>
+
+<hr>
+
+<h2>Using a custom model</h2>
+
+<p>The default Whisper models (tiny through large-v3-turbo) are general-purpose
+and work well for most languages.  For some languages, though, a model
+fine-tuned specifically on that language can produce dramatically better
+results.  GenSRT lets you add any faster-whisper-compatible model from
+HuggingFace and use it like the built-in models.</p>
+
+<p><strong>To add a custom model:</strong></p>
+
+<ol>
+<li>In the footer, open the <em>Model</em> dropdown.</li>
+<li>Pick <em>New…</em> at the bottom of the list.</li>
+<li>In the modal, paste the HuggingFace repo ID — for example
+<code>smcproject/vegam-whisper-medium-ml-int8_float16</code> for a
+Malayalam-tuned model.</li>
+<li>Click <em>Validate &amp; Add</em>.  GenSRT checks that the model exists
+on HuggingFace without downloading the weights (a 1-2 second check),
+then adds it to your model list.</li>
+<li>The new model is now selected.  Click <em>Generate SRT</em> as
+usual — the first run downloads the weights (a few minutes for ~1 GB),
+subsequent runs are instant.</li>
+</ol>
+
+<p><strong>What kinds of models work?</strong> Look for HuggingFace repositories
+tagged for <strong>CTranslate2</strong> or <strong>faster-whisper</strong>,
+or with names ending in <code>-ct2</code>, <code>-faster</code>, or
+<code>-int8_float16</code>.  Standard HuggingFace Transformers Whisper
+models need a conversion step first and won't load directly.</p>
+
+<p>Your custom model list is saved in <code>gensrt-known-models.json</code>
+next to the main config file, so it survives across sessions.  Models
+also live in <code>%USERPROFILE%\.cache\huggingface\hub\</code> once
+downloaded — they're shared across HuggingFace tools, so a model you
+downloaded for another project is already available to GenSRT.</p>
 
 <hr>
 

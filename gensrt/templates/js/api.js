@@ -49,19 +49,22 @@ function updateButtonStates() {
 videoPathInput.addEventListener('input', updateButtonStates);
 updateButtonStates();
 
-// ── Per-job footer selectors (Source / Target lang + Translation engine) ─
+// ── Per-job footer selectors (Source / Target lang + Model + VAD) ────────
 //
-// These three <select>s are populated on page load:
-//   * Source language and Translation Engine pre-fill from /api/config defaults
-//     (the user's saved gensrt-config.json).
-//   * Translation Engine's option list is fetched from /api/engines so it
-//     reflects what's actually installed.
-//   * Target language is locked to English for now — placeholder UI for the
-//     future multi-target translation feature.
+// These four <select>s are populated on page load:
+//   * Source language and Target language pre-fill from /api/config defaults.
+//   * Model is populated from /api/known_models (built-in recommended +
+//     user-added).  A "New…" sentinel option opens the Add Custom Model
+//     modal — on success, the new model joins the dropdown and is selected.
+//   * VAD on/off pre-fills from the saved default.
 //
-// Values are not auto-persisted to gensrt-config.json (that would silently
-// overwrite the user's defaults).  Drop G will read these on Generate SRT
-// click and send them with the /api/transcribe request as per-job overrides.
+// Translation engine is no longer in the footer (moved to Config modal
+// only) — model has more impact on output quality and earns the slot.
+// The backend still respects translation_engine from the saved config.
+//
+// Values are not auto-persisted to gensrt-config.json — that would silently
+// overwrite the user's defaults.  callDetectAPI() reads these on Generate
+// SRT click and sends them with /api/transcribe as per-job overrides.
 
 const ENGINE_LABELS = {
   google:      'Google (GTX)',
@@ -71,59 +74,239 @@ const ENGINE_LABELS = {
   none:        'None (skip translation)',
 };
 
+// Sentinel value used in the model dropdown to mean "open the Add Custom
+// Model modal".  Kept distinct from any real model name.
+const NEW_MODEL_SENTINEL = '__new_model__';
+
+// Globally accessible so config.js can rebuild the Config modal's model
+// dropdown using the same merged list.
+window.__gensrtKnownModels = [];
+
+async function _fetchKnownModels() {
+  try {
+    const res  = await fetch('/api/known_models');
+    const data = await res.json();
+    const list = (data && Array.isArray(data.models)) ? data.models : [];
+    window.__gensrtKnownModels = list;
+    return list;
+  } catch (err) {
+    console.error('Failed to load /api/known_models:', err);
+    return window.__gensrtKnownModels || [];
+  }
+}
+
+function _populateModelSelect(selModel, models, selectedValue) {
+  if (!selModel) return;
+  selModel.innerHTML = '';
+  const seen = new Set();
+  for (const m of models) {
+    if (seen.has(m)) continue;
+    seen.add(m);
+    const opt = document.createElement('option');
+    opt.value       = m;
+    opt.textContent = m;
+    selModel.appendChild(opt);
+  }
+  // If the saved value isn't in the known-models list (e.g. typed into
+  // config.json manually), add it as an extra option so it survives the
+  // round-trip through this dropdown.
+  if (selectedValue && !seen.has(selectedValue)) {
+    const opt = document.createElement('option');
+    opt.value       = selectedValue;
+    opt.textContent = selectedValue + ' (from config)';
+    selModel.insertBefore(opt, selModel.firstChild);
+  }
+  // Sentinel "New…" at the bottom.
+  const sep = document.createElement('option');
+  sep.disabled  = true;
+  sep.textContent = '──────────';
+  selModel.appendChild(sep);
+  const neu = document.createElement('option');
+  neu.value       = NEW_MODEL_SENTINEL;
+  neu.textContent = 'New…';
+  selModel.appendChild(neu);
+
+  if (selectedValue) selModel.value = selectedValue;
+}
+
 async function _initFooterSelectors() {
   const selSrc    = document.getElementById('sel-source-lang');
   const selTgt    = document.getElementById('sel-target-lang');
-  const selEngine = document.getElementById('sel-engine');
+  const selModel  = document.getElementById('sel-model');
   const selVad    = document.getElementById('sel-vad');
-  if (!selSrc && !selEngine && !selVad && !selTgt) return;
+  if (!selSrc && !selModel && !selVad && !selTgt) return;
 
-  // 1. Translation engine options come from the backend.
-  if (selEngine) {
-    try {
-      const res  = await fetch('/api/engines');
-      const data = await res.json();
-      const list = (data && Array.isArray(data.engines)) ? data.engines : [];
-      selEngine.innerHTML = '';
-      for (const key of list) {
-        const opt = document.createElement('option');
-        opt.value       = key;
-        opt.textContent = ENGINE_LABELS[key] || key;
-        selEngine.appendChild(opt);
-      }
-    } catch (err) {
-      console.error('Failed to load /api/engines:', err);
-    }
-  }
-
-  // 2. Pre-fill source language, target language, engine, and VAD from saved config defaults.
+  // 1. Load model list (built-in + user-added) and current config in parallel.
+  let cfg = {};
+  let knownModels = [];
   try {
-    const res    = await fetch('/api/config');
-    const result = await res.json();
-    const cfg    = (result && result.config) ? result.config : {};
-    if (selSrc && cfg.source_language) {
-      // Only set if the value is one of our offered options; otherwise leave at 'auto'.
-      const opt = selSrc.querySelector(`option[value="${cfg.source_language}"]`);
-      if (opt) selSrc.value = cfg.source_language;
-    }
-    if (selTgt && cfg.target_language) {
-      // Only set if it's one of the curated UI options.  If a power user has
-      // a target outside our list set via CLI/config, the footer stays on
-      // its default — they can adjust via the modal or use the CLI for that
-      // job.  This keeps the footer dropdown deterministic.
-      const opt = selTgt.querySelector(`option[value="${cfg.target_language}"]`);
-      if (opt) selTgt.value = cfg.target_language;
-    }
-    if (selEngine && cfg.translation_engine) {
-      const opt = selEngine.querySelector(`option[value="${cfg.translation_engine}"]`);
-      if (opt) selEngine.value = cfg.translation_engine;
-    }
-    if (selVad && typeof cfg.vad_enabled === 'boolean') {
-      selVad.value = cfg.vad_enabled ? 'on' : 'off';
-    }
+    const [cfgRes, modelsList] = await Promise.all([
+      fetch('/api/config').then(r => r.json()),
+      _fetchKnownModels(),
+    ]);
+    cfg = (cfgRes && cfgRes.config) ? cfgRes.config : {};
+    knownModels = modelsList;
   } catch (err) {
-    console.error('Failed to load /api/config for selector defaults:', err);
+    console.error('Footer init: failed to fetch config / known models:', err);
   }
+
+  // 2. Populate model dropdown — saved value wins; if it's not in the
+  //    known list, we add it as a "(from config)" option so it survives.
+  if (selModel) {
+    _populateModelSelect(selModel, knownModels, cfg.model || '');
+    selModel.addEventListener('change', _onModelSelectChange);
+  }
+
+  // 3. Pre-fill source language, target language, and VAD from saved config.
+  if (selSrc && cfg.source_language) {
+    const opt = selSrc.querySelector(`option[value="${cfg.source_language}"]`);
+    if (opt) selSrc.value = cfg.source_language;
+  }
+  if (selTgt && cfg.target_language) {
+    const opt = selTgt.querySelector(`option[value="${cfg.target_language}"]`);
+    if (opt) selTgt.value = cfg.target_language;
+  }
+  if (selVad && typeof cfg.vad_enabled === 'boolean') {
+    selVad.value = cfg.vad_enabled ? 'on' : 'off';
+  }
+}
+
+// ── Model dropdown "New…" handler ─────────────────────────────────────────
+//
+// When the user picks the sentinel option, we open the Add Custom Model
+// modal.  On a successful Validate & Add, the new model is appended to the
+// known-models side file via /api/add_known_model, then we rebuild the
+// dropdown so the new entry appears and is selected.  On Cancel, we
+// snap the dropdown back to whatever was selected before.
+
+let _lastModelSelection = null;
+
+function _onModelSelectChange(ev) {
+  const sel = ev.target;
+  if (sel.value !== NEW_MODEL_SENTINEL) {
+    _lastModelSelection = sel.value;
+    return;
+  }
+  // User picked "New…" — open the modal.
+  _openAddModelModal();
+}
+
+function _openAddModelModal() {
+  const modal  = document.getElementById('addModelModal');
+  const input  = document.getElementById('addModelInput');
+  const status = document.getElementById('addModelStatus');
+  const cancel = document.getElementById('addModelCancel');
+  const ok     = document.getElementById('addModelOk');
+  if (!modal || !input || !ok || !cancel) return;
+
+  input.value         = '';
+  status.textContent  = '';
+  status.style.color  = '';
+  ok.disabled         = false;
+  ok.textContent      = 'Validate & Add';
+
+  const restoreSelection = () => {
+    const selModel = document.getElementById('sel-model');
+    if (!selModel) return;
+    if (_lastModelSelection &&
+        selModel.querySelector(`option[value="${CSS.escape(_lastModelSelection)}"]`)) {
+      selModel.value = _lastModelSelection;
+    } else {
+      // Fall back to the first non-sentinel option.
+      for (const opt of selModel.options) {
+        if (!opt.disabled && opt.value && opt.value !== NEW_MODEL_SENTINEL) {
+          selModel.value = opt.value;
+          break;
+        }
+      }
+    }
+  };
+
+  const cleanup = () => {
+    modal.classList.remove('visible');
+    ok.removeEventListener('click', onOk);
+    cancel.removeEventListener('click', onCancel);
+    input.removeEventListener('keydown', onKey);
+  };
+
+  const onCancel = () => {
+    restoreSelection();
+    cleanup();
+  };
+  const onKey = (e) => {
+    if (e.key === 'Enter')   { e.preventDefault(); onOk(); }
+    if (e.key === 'Escape')  { e.preventDefault(); onCancel(); }
+  };
+  const onOk = async () => {
+    const name = (input.value || '').trim();
+    if (!name) {
+      status.textContent = 'Please enter a model name.';
+      status.style.color = 'var(--seam-on)';
+      return;
+    }
+    ok.disabled        = true;
+    ok.textContent     = 'Validating…';
+    status.textContent = 'Checking model on HuggingFace…';
+    status.style.color = 'var(--text-dim)';
+
+    try {
+      const valResp = await fetch('/api/validate_model', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ model: name }),
+      });
+      const valData = await valResp.json().catch(() => ({}));
+      if (!valResp.ok || valData.status !== 'ok') {
+        status.textContent = valData.message || `Validation failed (HTTP ${valResp.status})`;
+        status.style.color = '#ef4444';
+        ok.disabled = false;
+        ok.textContent = 'Validate & Add';
+        return;
+      }
+
+      // Validation passed — persist to side file.
+      const addResp = await fetch('/api/add_known_model', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ model: name }),
+      });
+      const addData = await addResp.json().catch(() => ({}));
+      if (!addResp.ok || addData.status !== 'ok') {
+        status.textContent = addData.message || `Could not save: HTTP ${addResp.status}`;
+        status.style.color = '#ef4444';
+        ok.disabled = false;
+        ok.textContent = 'Validate & Add';
+        return;
+      }
+
+      // Success — rebuild the dropdown with the new model, select it,
+      // and close the modal.  Also sync window.__gensrtKnownModels for
+      // config.js to pick up next time.
+      window.__gensrtKnownModels = Array.isArray(addData.models) ? addData.models : window.__gensrtKnownModels;
+      const selModel = document.getElementById('sel-model');
+      if (selModel) {
+        _populateModelSelect(selModel, window.__gensrtKnownModels, name);
+        _lastModelSelection = name;
+      }
+      // Also tell the Config modal (if open) to refresh its dropdown.
+      try { window.dispatchEvent(new CustomEvent('gensrt:known_models_updated', { detail: { models: window.__gensrtKnownModels, selected: name } })); }
+      catch (e) {}
+
+      cleanup();
+    } catch (err) {
+      console.error('Add model failed:', err);
+      status.textContent = `Error: ${err.message || err}`;
+      status.style.color = '#ef4444';
+      ok.disabled = false;
+      ok.textContent = 'Validate & Add';
+    }
+  };
+
+  ok.addEventListener('click', onOk);
+  cancel.addEventListener('click', onCancel);
+  input.addEventListener('keydown', onKey);
+  modal.classList.add('visible');
+  setTimeout(() => input.focus(), 10);
 }
 
 _initFooterSelectors();
@@ -243,12 +426,16 @@ async function callDetectAPI() {
   // Collect per-job overrides from the footer selectors.
   const selSrc    = document.getElementById('sel-source-lang');
   const selTgt    = document.getElementById('sel-target-lang');
-  const selEngine = document.getElementById('sel-engine');
+  const selModel  = document.getElementById('sel-model');
   const selVad    = document.getElementById('sel-vad');
   const payload   = { input_path: videoPath };
-  if (selSrc && selSrc.value)       payload.source_language    = selSrc.value;
-  if (selTgt && selTgt.value)       payload.target_language    = selTgt.value;
-  if (selEngine && selEngine.value) payload.translation_engine = selEngine.value;
+  if (selSrc && selSrc.value)       payload.source_language = selSrc.value;
+  if (selTgt && selTgt.value)       payload.target_language = selTgt.value;
+  // Model: skip the "New…" sentinel if somehow selected (shouldn't happen
+  // — the change handler opens the modal first — but be defensive).
+  if (selModel && selModel.value && selModel.value !== NEW_MODEL_SENTINEL) {
+    payload.model = selModel.value;
+  }
   if (selVad && selVad.value === 'off') payload.no_vad = true;
 
   detectBtn.disabled    = true;

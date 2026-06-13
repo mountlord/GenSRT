@@ -195,10 +195,10 @@
       <option value="pl">→ Polish</option>
     </select>
 
-    <select id="sel-engine"
-            title="Translation engine"
-            style="background: var(--surface2); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 5px 6px; font-size: 12px; max-width: 160px;">
-      <!-- populated from /api/engines in api.js -->
+    <select id="sel-model"
+            title="Whisper model.  Larger = more accurate but slower.  Try 'New…' to add a custom model from HuggingFace."
+            style="background: var(--surface2); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 5px 6px; font-size: 12px; max-width: 280px;">
+      <!-- populated from /api/known_models in api.js; "New…" is appended -->
     </select>
 
     <select id="sel-vad"
@@ -349,6 +349,34 @@
     <div class="modal-footer">
       <button class="modal-btn cancel" id="confirmModalCancel">Cancel</button>
       <button class="modal-btn save" id="confirmModalOk">Continue</button>
+    </div>
+  </div>
+</div>
+
+<!-- Add Custom Whisper Model modal (Drop I.14.7) -->
+<div id="addModelModal" class="modal-overlay">
+  <div class="modal" style="max-width: 520px;">
+    <div class="modal-header">Add Custom Whisper Model</div>
+    <div class="modal-body">
+      <div style="font-size: 13px; color: var(--text); line-height: 1.6; margin-bottom: 12px;">
+        Enter a HuggingFace repo ID (e.g.
+        <span style="font-family: var(--font-mono); color: var(--text-dim);">smcproject/vegam-whisper-medium-ml-int8_float16</span>)
+        or a local model directory path.
+      </div>
+      <div style="font-size: 12px; color: var(--text-dim); line-height: 1.5; margin-bottom: 12px;">
+        Models must be in CTranslate2 format (look for <code>-ct2</code>, <code>-faster</code>, or pre-converted faster-whisper builds on HuggingFace).
+      </div>
+      <input type="text" id="addModelInput"
+             placeholder="org/model-name"
+             autocomplete="off"
+             spellcheck="false"
+             style="width: 100%; background: var(--surface2); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 8px 10px; font-size: 13px; font-family: var(--font-mono);">
+      <div id="addModelStatus"
+           style="font-size: 12px; line-height: 1.5; margin-top: 10px; min-height: 18px;"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="modal-btn cancel" id="addModelCancel">Cancel</button>
+      <button class="modal-btn save"   id="addModelOk">Validate &amp; Add</button>
     </div>
   </div>
 </div>

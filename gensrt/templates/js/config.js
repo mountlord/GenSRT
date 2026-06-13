@@ -4,13 +4,19 @@ let currentConfig = null;
 // GenSRT configuration schema.  Every field listed here must also appear in
 // the server-side _CONFIG_VALIDATORS dict in server.py — saves of fields
 // outside that allow-list are rejected.
+//
+// Special case: the "model" field is rendered as a dynamic dropdown
+// populated from /api/known_models (see renderConfigEditor).  The
+// `options` list below is just the built-in fallback for first paint
+// before the API responds.
 const configSchema = {
   'Transcription': {
     'model': {
-      type: 'select',
+      type: 'select-dynamic',
+      source: 'known_models',
       options: ['tiny', 'base', 'small', 'medium', 'large',
                 'large-v1', 'large-v2', 'large-v3', 'large-v3-turbo'],
-      hint: 'Whisper model.  Larger = more accurate but slower.  large-v3-turbo is a good default on modern GPUs.',
+      hint: 'Whisper model.  Built-in sizes plus any custom HF models you have added.  Pick "New…" to add a custom one.',
     },
     'source_language': {
       type: 'select',
@@ -142,6 +148,54 @@ function renderConfigEditor(config) {
         input.checked = !!fieldValue;
         input.className   = 'config-field-input';
         input.dataset.key = fieldKey;
+      } else if (fieldDef.type === 'select-dynamic' && fieldDef.source === 'known_models') {
+        // Dynamic model dropdown — populated from window.__gensrtKnownModels
+        // (cached by api.js footer init) or the built-in fallback below.
+        // Always includes the saved value as an option even if it's not in
+        // the known list, so manual config.json edits aren't silently
+        // overwritten when the user clicks Save.
+        input             = document.createElement('select');
+        input.className   = 'config-field-input';
+        input.dataset.key = fieldKey;
+        const knownModels = (window.__gensrtKnownModels && window.__gensrtKnownModels.length)
+          ? window.__gensrtKnownModels
+          : (fieldDef.options || []);
+        const seen = new Set();
+        for (const m of knownModels) {
+          if (seen.has(m)) continue;
+          seen.add(m);
+          const opt        = document.createElement('option');
+          opt.value        = m;
+          opt.textContent  = m;
+          if (m === fieldValue) opt.selected = true;
+          input.appendChild(opt);
+        }
+        // Rescue: saved value isn't in the dropdown (manual edit, deleted
+        // model, etc.) — add it at the top so Save round-trips correctly.
+        if (fieldValue && !seen.has(fieldValue)) {
+          const opt        = document.createElement('option');
+          opt.value        = fieldValue;
+          opt.textContent  = fieldValue + ' (from config)';
+          opt.selected     = true;
+          input.insertBefore(opt, input.firstChild);
+        }
+        // Separator and New… sentinel.
+        const sep         = document.createElement('option');
+        sep.disabled      = true;
+        sep.textContent   = '──────────';
+        input.appendChild(sep);
+        const neu         = document.createElement('option');
+        neu.value         = '__new_model__';
+        neu.textContent   = 'New…';
+        input.appendChild(neu);
+        // Selecting New… opens the same Add Custom Model modal as the
+        // footer.  api.js owns the modal — we reuse it here.
+        input.addEventListener('change', (ev) => {
+          if (ev.target.value !== '__new_model__') return;
+          if (typeof _openAddModelModal === 'function') {
+            _openAddModelModal();
+          }
+        });
       } else if (fieldDef.type === 'select') {
         input             = document.createElement('select');
         input.className   = 'config-field-input';
@@ -243,6 +297,13 @@ function collectConfigFromUI() {
     } else if (input.type === 'number') {
       config[key] = input.value === '' ? null : parseFloat(input.value);
     } else {
+      // Special case: skip the model dropdown's "New…" sentinel — saving
+      // that string would persist garbage to gensrt-config.json.  The
+      // sentinel only opens the modal; the real model name lands here
+      // after the modal completes and the dropdown is rebuilt.
+      if (key === 'model' && input.value === '__new_model__') {
+        return; // keep currentConfig.model unchanged
+      }
       config[key] = input.value.trim() === '' ? null : input.value.trim();
     }
   });
@@ -348,4 +409,15 @@ configLoad.addEventListener('click', loadConfigFromServer);
 configSave.addEventListener('click', saveConfigToServer);
 configEditorModal.addEventListener('click', (e) => {
   if (e.target === configEditorModal) configEditorModal.classList.remove('visible');
+});
+
+// When a new model is added via the Add Custom Model modal (whether opened
+// from the footer or from inside the Config modal), refresh the Config
+// modal's model dropdown so the new entry appears and is selected.
+window.addEventListener('gensrt:known_models_updated', (ev) => {
+  if (!configEditorModal.classList.contains('visible')) return;
+  if (!currentConfig) return;
+  const newName = (ev && ev.detail && ev.detail.selected) ? ev.detail.selected : null;
+  if (newName) currentConfig.model = newName;
+  renderConfigEditor(currentConfig);
 });

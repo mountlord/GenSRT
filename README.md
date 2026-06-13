@@ -67,12 +67,13 @@ an SRT editor on the right.
 |---|---|
 | Source language | What language the audio is in (`auto` to detect) |
 | Target language | What language to translate to (English unless changed) |
-| Translation engine | Google / NLLB / Marian / none |
+| Model | Which Whisper model to use; includes built-in sizes plus any custom HuggingFace models you've added.  Pick **New…** to add one. |
 | VAD on/off | Toggle silence filtering for this run |
 | Generate SRT | Runs the pipeline on the loaded video |
 
 The footer pre-fills from your saved defaults and acts as a per-job override.
-Changes here don't touch the config file.
+Changes here don't touch the config file.  Translation engine selection moved
+to the Config modal — see *Tuning Parameters → Custom Whisper models* below.
 
 **Editing**
 
@@ -309,6 +310,37 @@ appear visibly before the speaker. GenSRT ships a tighter `200` ms default.
 `large-v3` at roughly 3× the speed. For Korean content where accuracy matters
 more than speed, `large-v3` may produce better results.
 
+#### Custom Whisper models
+
+The `--model` argument accepts any faster-whisper-compatible model — not just
+the built-in sizes above.  You can pass a HuggingFace repo ID or a local
+path to a CTranslate2-format model directory.
+
+```powershell
+# Malayalam-fine-tuned medium model (much better than large-v3-turbo on
+# Malayalam audio; trade-off is poorer rendering of foreign place names).
+gensrt --input video.mp4 ^
+       --source-language ml ^
+       --model "smcproject/vegam-whisper-medium-ml-int8_float16" ^
+       --compute-type int8_float16
+```
+
+The model downloads to your HuggingFace cache on first use, then loads
+instantly thereafter.  Look for repositories tagged for **CTranslate2**,
+**faster-whisper**, or with names ending in `-ct2` / `-faster` — standard
+HuggingFace Transformers Whisper models need conversion first and won't
+load directly.
+
+In the GUI, the footer's Model dropdown lists the built-in sizes plus any
+custom models you've added.  Pick **New…** at the bottom to add another —
+GenSRT validates the model exists on HuggingFace (without downloading
+weights) and remembers it across sessions in `gensrt-known-models.json`.
+The Config modal's Model dropdown mirrors the same list.
+
+The translation engine selector that previously lived in the footer has
+moved to the Config modal — model choice has more impact on output quality
+and earned the footer slot.
+
 ---
 
 ### Compute Type
@@ -437,6 +469,10 @@ lifting; you polish the result. A few things to know:
 
 ## What's new
 
+- **Pluggable Whisper models** — use any faster-whisper-compatible model
+  from HuggingFace via the new footer Model selector or `--model` CLI
+  argument.  Custom models persist across sessions in
+  `gensrt-known-models.json` so the first-time download cost is paid once.
 - WebVTT output written alongside every SRT — `.vtt` works in HTML5
   `<video>` elements natively as a `<track>` source
 - Live in-player subtitle display while editing — every Split, Merge,

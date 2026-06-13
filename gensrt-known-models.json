@@ -1,0 +1,5 @@
+{
+  "models": [
+    "smcproject/vegam-whisper-medium-ml-int8_float16"
+  ]
+}
