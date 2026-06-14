@@ -24,6 +24,7 @@ from __future__ import annotations
 import logging
 import re
 import time
+from urllib.parse import quote
 
 import requests
 
@@ -35,11 +36,37 @@ logger = logging.getLogger(__name__)
 _GTX_URL = "https://translate.googleapis.com/translate_a/single"
 _MYMEMORY_URL = "https://api.mymemory.translated.net/get"
 
-# Same limits as the browser extension
-_BATCH_MAX_CHARS = 4000
+# Budget the URL-encoded byte count of the q parameter, not the Unicode
+# code point count of the input.  Google's GTX endpoint returns 400 Bad
+# Request when the URL exceeds ~6–8 KB; we budget to 5.5 KB to leave
+# headroom for the URL prefix, other params, and any padding Google
+# might add on its side.
+#
+# Why bytes, not characters:
+#   - Each ASCII character URL-encodes 1:1 (e.g. "abc" stays "abc").
+#   - Each 2-byte UTF-8 character (Latin diacritics, Cyrillic, Greek)
+#     expands to 6 URL-encoded characters (two %XX sequences).
+#   - Each 3-byte UTF-8 character (Malayalam, Hindi, Tamil, Bengali, all
+#     Indic scripts, most CJK) expands to 9 URL-encoded characters.
+#   - Each 4-byte UTF-8 character (emoji, rare CJK) expands to 12.
+#
+# A character-count budget that works for ASCII content (the gTranslate
+# browser-extension use case) sends 9× too much for Indic-script content
+# (the GenSRT subtitle use case).  Budgeting by URL-encoded byte count
+# handles every script class with one rule.
+#
+# Practical batch sizes under a 5500-byte budget:
+#     ASCII:        ~5500 chars/batch
+#     2-byte UTF-8: ~1800 chars/batch
+#     3-byte UTF-8:  ~610 chars/batch  (Malayalam, Hindi, Tamil, ...)
+#     4-byte UTF-8:  ~450 chars/batch  (emoji-heavy)
+_BATCH_URL_BUDGET = 5500
 _BATCH_MAX_ITEMS = 40
 _GLUE = "\n{{SPLIT}}\n"
 _GLUE_RE = re.compile(r"\s*\{\{SPLIT\}\}\s*", re.IGNORECASE)
+# Pre-computed at module load — the glue is constant ASCII + control chars,
+# so its URL-encoded byte count never changes.
+_GLUE_URL_BYTES = len(quote(_GLUE, safe=""))
 
 _MAX_RETRIES = 3
 _RETRY_BASE_S = 0.25
@@ -186,30 +213,77 @@ class GoogleGTXEngine(TranslationEngine):
 
 # ── Chunk helpers ──────────────────────────────────────────────────────────
 
+def _encoded_byte_count(text: str) -> int:
+    """URL-encoded byte length of *text* — what Google's URL parser sees.
+
+    ASCII characters stay at 1 byte; non-ASCII characters expand to 3
+    URL-encoded characters per UTF-8 byte.  Returns 0 for empty input.
+    """
+    if not text:
+        return 0
+    return len(quote(text, safe=""))
+
+
 def _make_chunks(
     texts: list[str],
 ) -> list[tuple[list[int], list[str]]]:
-    """Split *texts* into (indices, texts) chunks within batch limits."""
+    """Split *texts* into (indices, texts) chunks within batch limits.
+
+    Two caps apply per batch:
+        * URL-encoded byte budget (:data:`_BATCH_URL_BUDGET`) — protects
+          against Google's GTX URL length limit.  This is the cap that
+          actually matters for Indic scripts.
+        * Item count cap (:data:`_BATCH_MAX_ITEMS`) — keeps the glue-split
+          alignment on Google's side reliable.  For very short ASCII
+          texts the byte budget would happily put hundreds in one batch,
+          but the larger the batch the higher the chance Google
+          re-orders or merges some of our glue strings.
+
+    A single text larger than the byte budget is still allowed through
+    in a batch of its own; the GTX request will likely fail, and the
+    per-chunk fallback in :meth:`translate_batch` will hand it to
+    MyMemory.  This is the correct behavior — we'd rather fail one
+    long cue gracefully than refuse to translate it at all.
+    """
     chunks: list[tuple[list[int], list[str]]] = []
     cur_indices: list[int] = []
     cur_texts: list[str] = []
-    cur_chars = 0
+    cur_url_bytes = 0
 
     for i, text in enumerate(texts):
-        n = len(text)
+        text_bytes = _encoded_byte_count(text)
+        # Every item after the first in a batch is preceded by a glue.
+        # Account for that when checking the budget for this candidate.
+        glue_bytes = _GLUE_URL_BYTES if cur_texts else 0
+
         if cur_texts and (
             len(cur_texts) >= _BATCH_MAX_ITEMS
-            or cur_chars + n + len(_GLUE) > _BATCH_MAX_CHARS
+            or cur_url_bytes + glue_bytes + text_bytes > _BATCH_URL_BUDGET
         ):
             chunks.append((cur_indices, cur_texts))
-            cur_indices, cur_texts, cur_chars = [], [], 0
+            cur_indices, cur_texts = [], []
+            cur_url_bytes = 0
+            glue_bytes = 0  # first item of new batch has no preceding glue
 
         cur_indices.append(i)
         cur_texts.append(text)
-        cur_chars += n + len(_GLUE)
+        cur_url_bytes += glue_bytes + text_bytes
 
     if cur_texts:
         chunks.append((cur_indices, cur_texts))
+
+    if logger.isEnabledFor(logging.DEBUG):
+        sizes = [len(t) for _i, t in chunks]
+        url_bytes = []
+        for _i, ts in chunks:
+            n = sum(_encoded_byte_count(x) for x in ts)
+            n += max(0, len(ts) - 1) * _GLUE_URL_BYTES
+            url_bytes.append(n)
+        logger.debug(
+            "[google-gtx] _make_chunks: %d texts → %d batches "
+            "(items per batch: %s, URL bytes per batch: %s)",
+            len(texts), len(chunks), sizes, url_bytes,
+        )
 
     return chunks
 

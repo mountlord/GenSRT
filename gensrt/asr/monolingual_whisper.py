@@ -109,7 +109,37 @@ class MonolingualWhisperEngine(ASREngine):
 
         # ── Step 4: Load model + per-chunk inference ─────────────────────
         model = self._load_model(wav_path, config, WhisperModel)
-        source_lang = None if config.source_language == "auto" else config.source_language
+
+        # Decide the language we'll pass to model.transcribe() per chunk.
+        #
+        # Priority:
+        #   1. User explicit (config.source_language != "auto") → use it
+        #      as-is.  The user asked, we comply.
+        #   2. Auto + model is in the known-monolingual registry → use
+        #      the registered training language.  Fine-tuned models like
+        #      vegam have an unreliable language-detection head; running
+        #      detection per chunk produces garbage results ('ta', 'ba',
+        #      'en' on Malayalam audio).  Skipping it is faster AND
+        #      gives the model a consistent language token across chunks.
+        #   3. Auto + unknown model → leave as None.  The chunked
+        #      transcription loop will detect on the first chunk, then
+        #      reuse that result for every subsequent chunk (see
+        #      _transcribe_chunks).
+        if config.source_language == "auto":
+            from gensrt.asr.factory import get_known_language_for_model
+            known_lang = get_known_language_for_model(config.model)
+            if known_lang is not None:
+                source_lang = known_lang
+                logger.info(
+                    "[%s] Auto-detect + known monolingual model: using "
+                    "registered training language %r (skips per-chunk "
+                    "detection)",
+                    self.name, source_lang,
+                )
+            else:
+                source_lang = None
+        else:
+            source_lang = config.source_language
 
         srt_segments, detected_language = self._transcribe_chunks(
             model, audio, sr, chunks, source_lang, wav_path,
@@ -220,8 +250,20 @@ class MonolingualWhisperEngine(ASREngine):
         import wave
 
         all_cues: list[tuple[float, float, str]] = []
-        detected_language: str | None = None
         chunk_index_for_logging = 0
+
+        # `effective_lang` is what we pass to model.transcribe() at each
+        # chunk.  It starts as the caller-supplied source_lang — which may
+        # already be set from the user's explicit choice OR from the
+        # known-monolingual registry — and stays constant for the run.
+        # If source_lang is None (user picked auto AND model isn't in the
+        # registry), effective_lang is None on the first chunk only.
+        # As soon as the first successful chunk returns a detected
+        # language, we lock it in for every remaining chunk.  This avoids
+        # the per-chunk detection cost AND prevents inconsistent language
+        # conditioning across chunks of the same audio.
+        effective_lang: str | None = source_lang
+        detected_language: str | None = source_lang  # for the return value
 
         # Single temp dir for all chunks of this job — auto-cleaned via with.
         with tempfile.TemporaryDirectory(prefix="gensrt_chunks_") as tmp_dir:
@@ -241,7 +283,7 @@ class MonolingualWhisperEngine(ASREngine):
                 try:
                     segments_gen, info = model.transcribe(
                         str(chunk_wav),
-                        language=source_lang,
+                        language=effective_lang,
                         word_timestamps=True,
                         beam_size=5,
                         # vad_filter=False: we've pre-chunked using our own
@@ -260,9 +302,17 @@ class MonolingualWhisperEngine(ASREngine):
                     )
                     continue
 
-                # Capture language from the first successful chunk.
-                if detected_language is None and info.language:
+                # Lock the language on first successful detection.  This
+                # both captures the return value and stops per-chunk
+                # detection in faster-whisper for the rest of the run.
+                if effective_lang is None and info.language:
+                    effective_lang = info.language
                     detected_language = info.language
+                    logger.info(
+                        "[%s] Detected language %r on first chunk — "
+                        "reusing for remaining %d chunk(s)",
+                        self.name, effective_lang, len(chunks) - chunk_index_for_logging,
+                    )
 
                 # Offset chunk-local timestamps by chunk start.
                 for seg in chunk_segments:
