@@ -97,6 +97,14 @@ function renderLinks(data) {
   chapterEls        = [];
   activeChapterEl   = null;
 
+  // Sync the in-player subtitle <track> BEFORE the empty-state early-return.
+  // resetProject() calls us with chapters=[], and we MUST clear the track
+  // in that case — otherwise the previous video's cues linger in the
+  // player overlay (pywebview/CEF doesn't always tear down the active-cue
+  // layer when the player goes display:none).  See _refreshSubtitleTrack()
+  // in project.js for the actual cue-teardown logic that runs in this path.
+  if (typeof _refreshSubtitleTrack === 'function') _refreshSubtitleTrack();
+
   if (chapters.length === 0) {
     linksBody.innerHTML = `
       <div class="links-empty">
@@ -163,11 +171,9 @@ function renderLinks(data) {
   linkCount.textContent = `${chapters.length}`;
   renderChapterTimeline(chapters);
 
-  // Refresh the in-player subtitle <track> from the (now-current) chaptersArr.
-  // This is the single chokepoint that catches Load, Edit-save, Split, Merge,
-  // and Delete — every SRT mutation re-renders the right pane, so every
-  // mutation also re-syncs the player's subtitle track.
-  if (typeof _refreshSubtitleTrack === 'function') _refreshSubtitleTrack();
+  // Subtitle <track> sync happens at the top of this function (above the
+  // empty-state early-return) so it fires regardless of whether the new
+  // chapter list is empty or populated.
 }
 
 // ── Chapter Editor ────────────────────────────────────────

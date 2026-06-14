@@ -485,13 +485,16 @@ language-suffixed file directly if you want to edit that one instead.</p>
 lifting; you polish the result. A few things to know:</p>
 
 <ul>
-<li><strong>Indic-language source audio</strong> — Whisper struggles with fast,
-dense speech in Indian languages, particularly news broadcasts
-with English code-switching. Output may contain hallucinated
-content that reads fluently but doesn't match the audio. For
-these cases, generate a draft and verify against the audio
-before publishing. (Better Indic transcription is planned for
-version 1.2.)</li>
+<li><strong>Indic-language source audio</strong> — the built-in Whisper
+models struggle with fast, dense speech in Indian languages,
+particularly news broadcasts with English code-switching.
+Output may contain hallucinated content that reads fluently
+but doesn't match the audio.  For Malayalam specifically, the
+built-in models also drop large stretches of speech on
+long-form audio — see <em>Chunked inference for fine-tuned
+models</em> below for the v1.2 solution using vegam.  For
+other Indic languages, generate a draft and verify against
+the audio before publishing.</li>
 <li><strong>Code-switching audio</strong> — recordings that mix multiple
 languages (e.g., English-heavy Hindi conversations) may
 produce inconsistent script output.</li>
@@ -571,6 +574,61 @@ next to the main config file, so it survives across sessions.  Models
 also live in <code>%USERPROFILE%\.cache\huggingface\hub\</code> once
 downloaded — they're shared across HuggingFace tools, so a model you
 downloaded for another project is already available to GenSRT.</p>
+
+<hr>
+
+<h2>Chunked inference for fine-tuned models</h2>
+
+<p>The built-in Whisper models (tiny through large-v3-turbo) were
+trained on long-form audio.  They handle 30+ seconds of continuous
+speech cleanly in a single pass.</p>
+
+<p>Community fine-tunes — Whisper models that someone has retrained on
+a specific language like Malayalam — are usually trained on short
+isolated phrases from corpora like Mozilla Common Voice.  When you
+feed those models long-form audio, the model transcribes the first
+phrase (~6-8 seconds) and effectively stops.  The rest of the audio
+is silently dropped from the output.</p>
+
+<p><strong>GenSRT 1.2 solves this with chunked inference.</strong>  Instead of
+passing the whole audio to the model in one call, the audio is sliced
+into ~5-second pieces along natural silences, each piece is
+transcribed independently, and the per-chunk results are assembled
+with their original timestamps preserved.  Malayalam users with
+vegam see roughly 2-3× more transcribed content compared to running
+the same model without chunking.</p>
+
+<p><strong>You don't need to opt in.</strong>  When GenSRT detects you've
+selected a fine-tuned Whisper model (vegam variants are
+auto-detected; any custom model added via <em>New…</em> is treated
+as fine-tuned by default), the chunked-inference path runs
+automatically.  Built-in Whisper models continue to use the standard
+single-call path.</p>
+
+<p>The cost is real but bounded: chunked inference is roughly 2×
+slower than single-call inference, because each chunk is a separate
+model call with its own overhead.  In practice this means ~2 minutes
+per 3-minute clip on a modest GPU instead of ~1 minute — a trade-off
+that buys you usable Malayalam subtitles in exchange for a longer wait.</p>
+
+<h3>A note on the � character in output</h3>
+
+<p>If you see the Unicode replacement character (<code>�</code>) at the
+end of a subtitle line, this is a signal from the underlying Whisper
+model that it stopped generating output mid-character.  Whisper's
+tokenizer works on UTF-8 bytes, and Indic scripts use 3 bytes per
+character; when the model emits its end-of-segment token after only
+1 or 2 of those 3 bytes, the decoder produces <code>�</code> to
+mark the incomplete sequence.</p>
+
+<p>The transcribed text <em>before</em> the <code>�</code> is still
+accurate — only the final character of that segment is incomplete.
+This is a model limitation, not a GenSRT defect, and is most visible
+with fine-tuned models on dense speech.  GenSRT shows the
+<code>�</code> as-is rather than hiding it, so you know which cues
+to spot-check during editing.  If you see frequent <code>�</code>
+markers with a particular model, consider raising an issue with the
+model's maintainers.</p>
 
 <hr>
 

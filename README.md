@@ -341,6 +341,59 @@ The translation engine selector that previously lived in the footer has
 moved to the Config modal — model choice has more impact on output quality
 and earned the footer slot.
 
+#### Chunked inference for fine-tuned models (v1.2)
+
+Whisper was originally trained on long-form audio with 30-second windows.
+The built-in Whisper sizes (`large-v3-turbo`, `medium`, etc.) inherit this
+property and transcribe long files cleanly in a single pass.
+
+Community fine-tunes are a different story.  When a Whisper model is
+fine-tuned on a corpus of short isolated phrases — Mozilla Common Voice
+is the canonical example — the model learns a phrase-shaped output
+distribution.  When you then feed it 30 seconds of continuous speech, it
+transcribes one phrase (~6-8 seconds) and effectively gives up,
+generating an `<|endoftext|>` token early.  The audio after that point
+is silently dropped from the output.
+
+GenSRT 1.2 solves this with **chunked inference**: rather than passing
+the whole audio to the model in one call, the audio is sliced into
+~5-second pieces along natural silences, each piece is transcribed
+independently, and the per-chunk results are assembled with their
+original timestamps preserved.  Vegam users see roughly 2-3× more
+transcribed content compared to v1.1.
+
+You don't need to opt in.  When GenSRT detects you've selected a
+fine-tuned Whisper model (vegam variants are auto-detected; any custom
+model added via the "New…" dropdown is treated as fine-tuned by
+default), the chunked-inference path runs automatically.  Built-in
+Whisper models continue to use the standard single-call path — they
+don't need chunking and would lose nothing by getting it, but the extra
+overhead isn't justified for models that already work correctly.
+
+The cost is real but bounded: chunked inference is roughly 2× slower
+than single-call inference on the same audio because each chunk is a
+separate model call with its own overhead.  In practice this means
+~2 minutes per 197-second clip on a modest GPU instead of ~1 minute.
+For most users this trade-off is the right one — better to wait twice
+as long for usable Malayalam subtitles than to get faster results that
+drop half the content.
+
+#### A note on the � character in output
+
+If you see the Unicode replacement character (`�`) at the end of a
+subtitle line, this is a signal from the underlying Whisper model that
+it stopped generating output mid-character.  Whisper's tokenizer works
+on UTF-8 bytes, and Indic scripts use 3 bytes per character; when the
+model emits its end-of-segment token after only 1 or 2 of those 3 bytes,
+the decoder produces `�` to mark the incomplete sequence.
+
+The transcribed text *before* the `�` is still accurate — only the
+final character of that segment is incomplete.  This is a model
+limitation, not a GenSRT defect, and is most visible with fine-tuned
+models on dense speech.  If you see frequent `�` markers with a
+particular model, consider raising an issue with the model's
+maintainers.
+
 ---
 
 ### Compute Type
@@ -436,12 +489,15 @@ target machine.
 GenSRT is a draft tool for serious subtitle work. The AI does the heavy
 lifting; you polish the result. A few things to know:
 
-- **Indic-language source audio** — Whisper struggles with fast, dense
-  speech in Indian languages, particularly news broadcasts with English
-  code-switching. Output may contain hallucinated content that reads
-  fluently but doesn't match the audio. For these cases, generate a draft
-  and verify against the audio before publishing. (Better Indic
-  transcription is planned for version 1.2.)
+- **Indic-language source audio with built-in Whisper models** — Whisper
+  struggles with fast, dense speech in Indian languages, particularly news
+  broadcasts with English code-switching. Output may contain hallucinated
+  content that reads fluently but doesn't match the audio. For Malayalam
+  audio, see *Chunked inference for fine-tuned models* above — using
+  vegam-whisper-medium-ml with v1.2's chunked inference produces
+  noticeably better results than the built-in models. For other Indic
+  languages without a fine-tuned model available, generate a draft with
+  the built-in models and verify against the audio before publishing.
 - **Code-switching audio** — recordings that mix multiple languages
   (e.g., English-heavy Hindi conversations) may produce inconsistent
   script output.
@@ -456,10 +512,16 @@ lifting; you polish the result. A few things to know:
 
 ## Roadmap
 
-- **IndicConformer ASR engine** for Indian-language source audio (v1.2) —
-  alternative ASR engine that handles fast, dense Indic speech significantly
-  better than Whisper, with VAD-based chunking and per-region timestamp
-  assembly. See *Known Limitations* above for the current state.
+- **Hallucination cleanup post-processor** — fine-tuned Whisper models
+  (vegam in particular) occasionally emit a phrase from earlier in the
+  audio at chunk tails.  A post-processor that detects tail-substring
+  overlap with previous cues could strip these conservatively.  Needs
+  cross-language native-reader validation before shipping.
+- **IndicConformer ASR engine** for Indian-language source audio —
+  AI4Bharat's Conformer-based model handles fast, dense Indic speech with
+  different failure modes than Whisper.  Evaluated during v1.2 development
+  (`docs/INVESTIGATIONS.md` for details) and deferred — vegam with chunked
+  inference proved sufficient for the v1.2 release.
 - **`--target-language` CLI flag** — currently target language is set via the
   config file or the GUI footer. A direct flag would round out the CLI
   surface for batch jobs that want per-language output without writing a
@@ -468,6 +530,20 @@ lifting; you polish the result. A few things to know:
 ---
 
 ## What's new
+
+**v1.2:**
+
+- **Chunked inference for fine-tuned Whisper models** — vegam and other
+  Common-Voice-trained fine-tunes that previously dropped content on
+  long-form audio now transcribe cleanly via silent-boundary chunking.
+  Auto-engaged when a fine-tuned model is selected; no configuration
+  required.  See *Chunked inference for fine-tuned models* above.
+- **ASR engine factory** under `gensrt/asr/` — pluggable engine layer
+  mirroring the existing translation factory pattern.  Future engines
+  (IndicConformer, monolingual fine-tunes) can slot in alongside the
+  current Multilingual / Monolingual Whisper engines.
+
+**v1.1:**
 
 - **Pluggable Whisper models** — use any faster-whisper-compatible model
   from HuggingFace via the new footer Model selector or `--model` CLI
@@ -486,3 +562,16 @@ lifting; you polish the result. A few things to know:
 - Self-contained `user_guide.html` shipped alongside the executable
 - Documented known limitations for transparency about what the tool
   does and doesn't do well
+
+## Acknowledgments
+
+GenSRT's chunked-inference path was developed against
+**[vegam-whisper-medium-ml](https://huggingface.co/smcproject/vegam-whisper-medium-ml)**
+from **[Swathanthra Malayalam Computing (SMC)](https://smc.org.in/)**.
+Kavya Manohar, Leena G Pillai, and Elizabeth Sherly's analysis of
+Indic-script ASR evaluation pitfalls
+([arxiv 2409.02449](https://arxiv.org/abs/2409.02449)) shaped how we
+think about quality measurement for these models.  AI4Bharat's OIWER
+benchmark ([arxiv 2603.00941](https://arxiv.org/abs/2603.00941))
+provides the most rigorous Malayalam ASR comparison currently
+published.

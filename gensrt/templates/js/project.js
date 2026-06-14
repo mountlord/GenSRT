@@ -103,6 +103,24 @@ function _refreshSubtitleTrack() {
   }
 
   if (!vttText) {
+    // Removing src alone doesn't clear the displayed cue in CEF/WebView2
+    // (which pywebview uses) — the TextTrack object retains parsed cues
+    // and keeps showing whichever one was active.  Explicit teardown:
+    //   1. mode='disabled' stops the browser from displaying any cue
+    //   2. removeCue() drains the parsed cue list — defensive, since
+    //      some browser embeds leak the cues until the next src parse
+    //   3. removeAttribute('src') drops the blob reference
+    try {
+      const tt = trackEl.track;
+      if (tt) {
+        tt.mode = 'disabled';
+        if (tt.cues && tt.cues.length) {
+          for (let i = tt.cues.length - 1; i >= 0; i--) {
+            try { tt.removeCue(tt.cues[i]); } catch {}
+          }
+        }
+      }
+    } catch {}
     trackEl.removeAttribute('src');
     return;
   }

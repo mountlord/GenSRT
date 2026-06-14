@@ -110,8 +110,6 @@ pyinstaller --noconfirm --clean --onedir --name gensrt `
     --collect-all nvidia.cublas `
     --collect-all nvidia.cudnn `
     `
-    --exclude-module silero_vad `
-    --exclude-module torchaudio `
     --exclude-module torchvision `
     --exclude-module matplotlib `
     --exclude-module notebook `

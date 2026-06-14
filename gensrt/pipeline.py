@@ -4,7 +4,11 @@
 (headless) and the GUI (via :mod:`gensrt.operations`).  It processes one
 media file through the complete flow::
 
-    audio extract → VAD → whisper → translate → SRT write
+    audio extract → ASR engine → translate → SRT write
+
+The ASR stage is dispatched through :func:`gensrt.asr.get_engine_for_model`,
+which selects either the multilingual or monolingual engine based on the
+configured model.  See :mod:`gensrt.asr.factory` for routing rules.
 
 Progress and status are surfaced via optional callbacks so the same
 function works in tqdm-driven CLI mode and polling-driven GUI mode.
@@ -85,7 +89,7 @@ def run_pipeline(
 
     Raises:
         AudioExtractionError: If FFmpeg cannot extract audio.
-        TranscriptionError:   If Whisper fails.
+        TranscriptionError:   If the ASR engine fails.
         TranslationError:     If the translation engine fails (non-fatal if
                               engine is ``none``).
         OutputError:          If the ``.srt`` file cannot be written.
@@ -117,14 +121,14 @@ def run_pipeline(
         from gensrt.audio.extractor import extract_audio
         wav_path = extract_audio(input_path)
 
-        # ── Phase 2: Transcription (VAD runs inside faster-whisper) ───────
+        # ── Phase 2: Transcription (engine selected by model name) ────────
         if config.vad_enabled:
             status("Transcribing with VAD…")
         else:
             status("Transcribing…")
         progress(1, PIPELINE_PHASES)
 
-        raw_segments, detected_language = _run_whisper(
+        srt_segments, detected_language = _run_asr(
             wav_path=wav_path,
             config=config,
         )
@@ -149,8 +153,8 @@ def run_pipeline(
             )
         progress(2, PIPELINE_PHASES)
 
-        srt_segments = _build_segments(
-            raw_segments=raw_segments,
+        srt_segments = _maybe_translate(
+            segments=srt_segments,
             detected_language=detected_language,
             config=config,
             should_translate=should_translate,
@@ -203,127 +207,51 @@ def run_pipeline(
     )
 
 
-def _run_whisper(
+def _run_asr(
     wav_path: Path,
     config: TranscriptionConfig,
-) -> tuple[list, str]:
-    """Run faster-whisper and return (raw_segments_list, detected_language).
+) -> tuple[list[SRTSegment], str]:
+    """Dispatch the ASR stage through the engine factory.
 
-    VAD is handled entirely inside faster-whisper on the same device as
-    the model — no separate Silero pass needed.
+    Returns ``(segments, detected_language)`` — the engine produces
+    :class:`SRTSegment` objects directly, so no further conversion is
+    needed before translation.
     """
-    from gensrt.exceptions import TranscriptionError
+    from gensrt.asr import get_engine_for_model
 
-    try:
-        from faster_whisper import WhisperModel
-    except ImportError as exc:
-        raise TranscriptionError(
-            str(wav_path),
-            "faster-whisper is not installed. Run: pip install faster-whisper",
-        ) from exc
-
-    device = config.device
-    compute_type = config.compute_type
-
-    logger.info(
-        "Loading Whisper model: %s  (device=%s, compute=%s)",
-        config.model, device, compute_type,
-    )
-
-    compute_fallbacks = [compute_type]
-    if compute_type == "float16":
-        compute_fallbacks += ["int8_float16", "int8"]
-    elif compute_type == "int8_float16":
-        compute_fallbacks += ["int8"]
-
-    model = None
-    last_exc: Exception | None = None
-    for ct in compute_fallbacks:
-        try:
-            model = WhisperModel(config.model, device=device, compute_type=ct)
-            if ct != compute_type:
-                logger.warning(
-                    "compute_type=%r unsupported — fell back to %r.", compute_type, ct
-                )
-            break
-        except Exception as exc:
-            last_exc = exc
-            logger.debug("WhisperModel load failed with compute_type=%r: %s", ct, exc)
-
-    if model is None:
-        raise TranscriptionError(
-            str(wav_path), f"Failed to load Whisper model: {last_exc}"
-        ) from last_exc
-
-    source_lang = None if config.source_language == "auto" else config.source_language
-
-    transcribe_kwargs: dict = dict(
-        language=source_lang,
-        word_timestamps=True,
-        beam_size=5,
-    )
-
-    if config.vad_enabled:
-        transcribe_kwargs["vad_filter"] = True
-        transcribe_kwargs["vad_parameters"] = {
-            "threshold": config.vad_threshold,
-            "min_speech_duration_ms": config.vad_min_speech_ms,
-            "min_silence_duration_ms": config.vad_min_silence_ms,
-            "speech_pad_ms": config.vad_speech_pad_ms,
-        }
-        logger.info(
-            "VAD enabled (threshold=%.2f, min_speech=%dms, min_silence=%dms, speech_pad=%dms)",
-            config.vad_threshold, config.vad_min_speech_ms, config.vad_min_silence_ms,
-            config.vad_speech_pad_ms,
-        )
-    else:
-        logger.info("VAD disabled — full audio passed to Whisper.")
-
-    try:
-        segments_gen, info = model.transcribe(str(wav_path), **transcribe_kwargs)
-        # Consume generator to a list (so temp WAV can be safely deleted)
-        raw_segments = list(segments_gen)
-    except Exception as exc:
-        raise TranscriptionError(str(wav_path), str(exc)) from exc
-
-    detected_language = info.language or "unknown"
-    logger.info(
-        "Whisper: %d segments, lang=%s (prob=%.2f)",
-        len(raw_segments),
-        detected_language,
-        info.language_probability,
-    )
-    return raw_segments, detected_language
+    engine = get_engine_for_model(config.model)
+    logger.info("ASR engine: %s (model=%s)", engine.name, config.model)
+    return engine.transcribe(wav_path, config)
 
 
-def _build_segments(
-    raw_segments: list,
+def _maybe_translate(
+    segments: list[SRTSegment],
     detected_language: str,
     config: TranscriptionConfig,
     should_translate: bool,
 ) -> list[SRTSegment]:
-    """Convert raw Whisper segments to translated :class:`SRTSegment` objects.
+    """Translate *segments* via the configured engine, if appropriate.
+
+    When ``should_translate`` is False, returns *segments* unchanged.
+    Translation failures are logged at WARNING and fall back to the
+    untranslated source text — one failed segment never aborts the
+    whole batch.
 
     Args:
-        raw_segments:     List of ``faster_whisper.transcribe.Segment`` objects.
-        detected_language: Detected language code.
-        config:           Transcription config (translation engine key).
-        should_translate: Whether to run translation.
-
-    Returns:
-        List of :class:`SRTSegment` objects.
+        segments:           Source-language segments from the ASR engine.
+        detected_language:  ISO code detected by the engine.
+        config:             Translation engine + target language come
+                            from here.
+        should_translate:   Pipeline-level gate from
+                            :func:`run_pipeline`.
     """
-    from gensrt.srt.builder import segments_from_whisper
-
-    srt_segments = segments_from_whisper(raw_segments)
-
     if not should_translate:
-        return srt_segments
+        return segments
 
     from gensrt.translation.factory import get_engine
     engine = get_engine(config.translation_engine)
 
-    texts = [seg.text for seg in srt_segments]
+    texts = [seg.text for seg in segments]
     try:
         translated_texts = engine.translate_batch(
             texts, detected_language, config.target_language
@@ -335,6 +263,6 @@ def _build_segments(
         translated_texts = texts
 
     return [
-        SRTSegment(index=seg.index, start=seg.start, end=seg.end, text=en)
-        for seg, en in zip(srt_segments, translated_texts)
+        SRTSegment(index=seg.index, start=seg.start, end=seg.end, text=tr)
+        for seg, tr in zip(segments, translated_texts)
     ]
