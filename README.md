@@ -50,15 +50,29 @@ See the [v1.2 release notes](https://github.com/mountlord/GenSRT/releases/tag/v1
 4. Click **Generate SRT**. The model auto-downloads on first use (~1-2 GB depending on the model), then transcription begins.
 5. When done, the right-pane cue list populates and subtitles display in the in-player overlay during playback.
 
+> **First-run note:** the first time you generate an SRT with a given model, the model auto-downloads to your HuggingFace cache (~1-2 GB). The download is one-time. On CPU-only machines, transcription itself runs to completion but takes substantially longer than on a CUDA GPU — see [Requirements](#requirements) for typical timings.
+
 **For Malayalam:** select `smcproject/vegam-whisper-medium-ml-int8_float16` from the Model dropdown. v1.2's chunked inference runs automatically.
 
 **For other Indic or less-common languages:** start with `large-v3-turbo`. If results are poor, search HuggingFace for community fine-tunes and add the repo path via **New…** in the Model dropdown.
 
 ## Requirements
 
-- Windows 10 or Windows 11
-- NVIDIA GPU with CUDA support (~2 GB VRAM is enough for vegam; ~4 GB for `large-v3-turbo`)
+- **Windows 10 or Windows 11**
+- **Recommended:** NVIDIA GPU with CUDA support (~2 GB VRAM is enough for vegam; ~4 GB for `large-v3-turbo`)
+- **Also works on CPU** (Intel/AMD, including integrated graphics like Intel Arc) — GenSRT falls back automatically when no CUDA GPU is detected
 - Internet connection for first-run model download
+
+### A note on speed
+
+GPU vs. CPU is a substantial difference for Whisper-class models — observed timings on a 4.5-minute Malayalam news clip using `smcproject/vegam-whisper-medium-ml-int8_float16`:
+
+| Hardware | Time to transcribe |
+|---|---|
+| NVIDIA RTX 3060 Ti (CUDA) | ~7-8 minutes |
+| Intel Arc 140V iGPU (CPU mode, no CUDA) | ~24 minutes |
+
+CPU mode runs to completion and produces comparable output quality — it just takes longer. If your machine doesn't have an NVIDIA GPU, GenSRT will still work; plan for the wait.
 
 ## Features
 
