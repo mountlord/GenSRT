@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: User guide
+    url: https://github.com/mountlord/GenSRT/blob/main/user_guide.html
+    about: Full documentation of GenSRT's features and workflows.
+  - name: Known limitations
+    url: https://github.com/mountlord/GenSRT#known-limitations
+    about: Documented behaviors that may look like bugs but are model limitations rather than tool defects.
+  - name: Release notes
+    url: https://github.com/mountlord/GenSRT/releases
+    about: What changed in each version.

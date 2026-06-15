@@ -1,0 +1,142 @@
+name: Bug report
+description: Something isn't working in GenSRT.  File a report so we can investigate.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for taking the time to file a bug report.  The more detail you
+        can give in the fields below, the faster we can diagnose what's going on.
+
+        **Before filing:**
+        - Search [existing issues](https://github.com/mountlord/GenSRT/issues?q=is%3Aissue) to see if this has been reported.
+        - Check the [user guide](https://github.com/mountlord/GenSRT/blob/main/user_guide.html) if the problem might be a known limitation.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of what went wrong.
+      placeholder: |
+        e.g. "Generated SRT for a Hindi video, but the right pane only shows
+        the first 3 cues and then transcription stops."
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-expected
+    attributes:
+      label: What did you expect to happen?
+      placeholder: |
+        e.g. "Expected transcription to continue through the full video."
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction-steps
+    attributes:
+      label: Steps to reproduce
+      description: Numbered steps that let us reliably trigger the bug.
+      placeholder: |
+        1. Launch GenSRT
+        2. Drop video file XYZ.mp4 onto the player
+        3. Select model "openai/whisper-large-v3-turbo"
+        4. Click "Generate SRT"
+        5. Wait for completion
+        6. Observe: only 3 cues appear in the right pane
+      value: |
+        1. 
+        2. 
+        3. 
+    validations:
+      required: true
+
+  - type: input
+    id: gensrt-version
+    attributes:
+      label: GenSRT version
+      description: Check the title bar of the GenSRT window, or the file name of the installer you downloaded.
+      placeholder: e.g. v1.2.0
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install-method
+    attributes:
+      label: How did you install GenSRT?
+      options:
+        - "Downloaded gensrt-install.exe from a GitHub release"
+        - "Built from source with pip install -e ."
+        - "Other (describe below)"
+    validations:
+      required: true
+
+  - type: input
+    id: os-version
+    attributes:
+      label: Windows version
+      description: Settings then System then About then Windows specifications
+      placeholder: e.g. Windows 11 24H2
+    validations:
+      required: true
+
+  - type: input
+    id: gpu
+    attributes:
+      label: GPU
+      description: Device Manager then Display adapters.  Include card name and VRAM if known.  Write "CPU only" if no discrete GPU.
+      placeholder: e.g. NVIDIA RTX 3060 Ti 8GB / Intel Arc 140V iGPU / CPU only
+    validations:
+      required: true
+
+  - type: input
+    id: model-used
+    attributes:
+      label: Model used
+      description: From the Model selector dropdown in the GenSRT footer.
+      placeholder: e.g. openai/whisper-large-v3-turbo, smcproject/vegam-whisper-medium-ml-int8_float16
+    validations:
+      required: true
+
+  - type: input
+    id: source-language
+    attributes:
+      label: Source language
+      description: From the source language selector in the GenSRT footer.
+      placeholder: e.g. Auto-Detect, English, Malayalam
+    validations:
+      required: true
+
+  - type: textarea
+    id: console-log
+    attributes:
+      label: Console log output
+      description: |
+        If you ran GenSRT from a PowerShell terminal, paste the relevant log output
+        in the box below.  Otherwise, run GenSRT from PowerShell once with `gensrt`
+        (or `gensrt.exe`) so we can see the log.
+
+        Hide anything personal (file paths with your name, etc.) before pasting.
+      render: shell
+      placeholder: |
+        Paste the log lines from the failing run here.
+
+  - type: textarea
+    id: video-clip
+    attributes:
+      label: Video clip (if shareable)
+      description: |
+        If the video is short and not private, attach it to this issue using
+        the file-upload icon, or share a link to a copy.  This helps us
+        reproduce the exact problem on the exact content.
+
+        If the clip is private, describe what's in it instead (e.g. "3-minute
+        Malayalam news broadcast with English code-switching, anchor speaking
+        ~180 words/minute").
+
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: Anything else?
+      description: Workarounds tried, screenshots, related issues, etc.

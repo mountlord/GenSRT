@@ -1,0 +1,35 @@
+name: Question
+description: Usage question, "how do I do X" question, or general discussion.
+title: "[Q]: "
+labels: ["question"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this for usage questions, "how do I..." questions, or general
+        discussion that isn't a bug or a feature request.
+
+        **Before asking:**
+        - Check the [user guide](https://github.com/mountlord/GenSRT/blob/main/user_guide.html) shipped with the executable.
+        - Search [existing issues](https://github.com/mountlord/GenSRT/issues?q=is%3Aissue) to see if it's been answered.
+
+  - type: textarea
+    id: question
+    attributes:
+      label: Your question
+      placeholder: |
+        e.g. "What's the right model to use for transcribing French audio?
+        I tried whisper-large-v3-turbo but the output is missing accents."
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: |
+        Background that helps me give a useful answer.  Skip if not relevant.
+      placeholder: |
+        e.g. "Generating subtitles for a friend's French film project; the
+        audio is studio-quality with two speakers.  I'm on Windows 11 with
+        an NVIDIA RTX 3070."
