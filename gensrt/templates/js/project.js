@@ -103,13 +103,21 @@ function _refreshSubtitleTrack() {
   }
 
   if (!vttText) {
-    // Removing src alone doesn't clear the displayed cue in CEF/WebView2
-    // (which pywebview uses) — the TextTrack object retains parsed cues
-    // and keeps showing whichever one was active.  Explicit teardown:
-    //   1. mode='disabled' stops the browser from displaying any cue
+    // Empty-state teardown that survives a subsequent src change.
+    //
+    //   1. mode='disabled' stops the browser from displaying any cue.
+    //      This is what was missing in v1.1 and made New Project leak
+    //      the previous video's last cue.
     //   2. removeCue() drains the parsed cue list — defensive, since
-    //      some browser embeds leak the cues until the next src parse
-    //   3. removeAttribute('src') drops the blob reference
+    //      some browser embeds leak the cues until the next src parse.
+    //   3. We do NOT remove the src attribute.  In CEF/WebView2 (which
+    //      pywebview uses), removing src from a <track> can leave the
+    //      element in an "unloaded" state from which setting a new src
+    //      doesn't re-trigger parsing — breaking the populated-after-
+    //      empty transition that the post-transcribe flow needs.
+    //      Leaving the (now-revoked) blob URL on src keeps the track
+    //      element "loaded" enough that a future src reassignment is
+    //      treated as a real source change.
     try {
       const tt = trackEl.track;
       if (tt) {
@@ -121,20 +129,73 @@ function _refreshSubtitleTrack() {
         }
       }
     } catch {}
-    trackEl.removeAttribute('src');
     return;
   }
 
   const blob = new Blob([vttText], { type: 'text/vtt' });
   _subtitleBlobUrl = URL.createObjectURL(blob);
-  trackEl.src = _subtitleBlobUrl;
 
-  // Browsers default new TextTracks to 'disabled' even with the `default`
-  // attribute set when src changes dynamically.  Force 'showing' so cues
-  // render in the player.
+  // We replace the <track> element entirely instead of reassigning .src
+  // on the existing one.  Reassigning works for short video-to-SRT gaps
+  // (Drop SRT path, sub-second), but fails for long gaps (Generate path,
+  // ~7 minutes): once the parent <video> reaches readyState 4
+  // (HAVE_ENOUGH_DATA), CEF/WebView2 silently skips re-parsing track src
+  // assignments — the cue list stays empty even though src, mode, and
+  // readyState all look correct.
+  //
+  // Creating a fresh <track> element guarantees a fresh TextTrack object
+  // with no "we already missed the window" state.  CEF treats it as a
+  // first-time track addition and parses normally.
+  //
+  // We preserve the element's attributes (id, kind, srclang, label,
+  // default) so any external code that looks it up by id still works.
+  // The video element's textTracks list adds the new TextTrack; the old
+  // one falls off when the old <track> is removed from DOM.
   try {
-    if (trackEl.track) trackEl.track.mode = 'showing';
-  } catch {}
+    const oldTrack = trackEl;
+    const parent = oldTrack.parentNode;
+    if (parent) {
+      const fresh = document.createElement('track');
+      // Copy attributes from the old track.  This is the minimal set
+      // GenSRT actually uses; if the template grows more attributes,
+      // they should be copied here too.
+      fresh.id = oldTrack.id;
+      fresh.kind = oldTrack.kind || 'subtitles';
+      if (oldTrack.srclang) fresh.srclang = oldTrack.srclang;
+      if (oldTrack.label) fresh.label = oldTrack.label;
+      if (oldTrack.default) fresh.default = true;
+      // Set src BEFORE inserting into the DOM so the browser parses it
+      // as part of the initial track activation rather than as a later
+      // src change.
+      fresh.src = _subtitleBlobUrl;
+      // Replace in-place to preserve sibling order.
+      parent.replaceChild(fresh, oldTrack);
+      // Update the cached reference so subsequent calls operate on the
+      // new element.  trackEl is a const in this function, but the
+      // outer-scope lookup uses getElementById which now resolves to
+      // the fresh element by id.
+      // Force mode='showing' on the new track.  Browsers default new
+      // tracks to 'disabled' even with the `default` attribute when
+      // src is set programmatically before DOM insertion.
+      try {
+        if (fresh.track) fresh.track.mode = 'showing';
+      } catch {}
+    } else {
+      // Fallback (shouldn't happen — track element is always inside
+      // the video element in our template): old-style src reassignment.
+      trackEl.src = _subtitleBlobUrl;
+      try {
+        if (trackEl.track) trackEl.track.mode = 'showing';
+      } catch {}
+    }
+  } catch (err) {
+    console.error('_refreshSubtitleTrack: track replacement failed, falling back to src reassignment:', err);
+    // Last-resort fallback so we don't break the player on unexpected DOM state.
+    trackEl.src = _subtitleBlobUrl;
+    try {
+      if (trackEl.track) trackEl.track.mode = 'showing';
+    } catch {}
+  }
 }
 
 window._refreshSubtitleTrack = _refreshSubtitleTrack;
