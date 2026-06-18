@@ -55,6 +55,13 @@ KNOWN_MONOLINGUAL_MODELS: tuple[tuple[str, str], ...] = (
     ("smcproject/vegam-whisper-medium-ml", "ml"),
     # Kurian Benoy's variants (different quantizations, same base model).
     ("kurianbenoy/vegam-whisper-medium-ml", "ml"),
+    # Adalat AI's R-MFT Malayalam fine-tune of Whisper-medium.  Vividh-ASR
+    # benchmark reports substantial WER improvements over vegam on broadcast
+    # (~43% relative) and global (~26% relative) test splits.  Training data
+    # is ~894h across studio/broadcast/spontaneous tiers; technique
+    # introduced in arxiv 2605.13087 (Juvekar, Manohar, et al., 2026).
+    # CT2 conversion published by Adalat AI directly; license Apache-2.0.
+    ("adalat-ai/ct2-whisper-medium-ml-rmft", "ml"),
 )
 
 # Derived view: just the prefix strings, for the always-chunked check.
