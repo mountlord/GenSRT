@@ -49,6 +49,12 @@ its timestamps.  This led directly to I-2.
 **Closed:** v1.2 development (late cycle)
 **Ships in:** v1.2 (Drop I.15)
 
+> **Correction (v1.2.1):** the training-distribution hypothesis below was
+> found to be mechanistically incorrect.  The chunking *method* and *results*
+> in this entry stand and ship unchanged — but the actual root cause of the
+> cutoff is a CTranslate2 decode-length cap, not vegam's training corpus.  See
+> the correction at the end of this entry and **I-7** for the real mechanism.
+
 **Hypothesis:** vegam was fine-tuned on Mozilla Common Voice 11.0
 Malayalam, a corpus of 5-15 second isolated phrases.  When called on
 long-form audio, vegam produces ~6-8 seconds of transcription per
@@ -100,6 +106,16 @@ via the GUI.
   amount of chunking helps.  Comparable to live broadcast closed
   captioning's known behavior on fast/dense speech.
 
+**Correction — actual root cause.**  The hypothesis that opened this
+investigation (Common-Voice short-phrase training → learned "stop after a
+phrase" behavior) is wrong.  The cutoff is a structural decode-length cap in
+CTranslate2, diagnosed by Kavya Manohar after v1.2 shipped and documented in
+full under **I-7**.  Notably, the 13-config byte-identical result in Method
+step 1 above was already evidence *for* a structural cap (a learned behavior
+could be nudged by sampling parameters; a hard length cap cannot) — we
+mis-read it at the time.  The chunking pipeline is the correct fix either
+way; only the explanation changed.
+
 ---
 
 ### I-3a: Malayalam-monolingual IndicConformer
@@ -128,6 +144,89 @@ quality improvement.
 content classes where chunked vegam struggles (very fast speech,
 heavy code-switching), revisit IndicConformer as an alternative
 engine routed through the existing ASR factory.
+
+---
+
+## v1.2.1 investigations
+
+### I-7: CTranslate2 decode-length cap as the root cause of fine-tune long-form cutoff
+
+**Status:** `RESOLVED SUCCESS` (root cause) — one `OPEN` sub-question (R-MFT 1.00s emission rate)
+**Closed:** v1.2.1 development
+**Relationship to I-2:** supersedes I-2's *causal hypothesis* only; I-2's
+chunking method and results are unaffected.
+
+**Background.**  I-2 shipped a working chunking pipeline on the hypothesis
+that vegam's ~7-second cutoff came from its Common Voice training
+distribution.  The pipeline works; the mechanism was wrong.
+
+**Correct root cause (diagnosis: Kavya Manohar, vegam maintainer, Adalat
+AI).**  The cutoff is structural to the inference stack, not the training
+data:
+
+- CTranslate2's Whisper decoder caps the total token sequence at 448
+  tokens.  With Whisper's timestamp and language/task tokens interleaved
+  into that budget, the effective text-token allowance is roughly half —
+  about 224 tokens (`max_length = min(total_max_length / 2,
+  total_max_length − prompt_length)`).
+- Whisper's BPE tokenizer is highly inefficient on Indic scripts: a single
+  Malayalam grapheme can expand to several tokens.  Dense Malayalam
+  consumes the ~224-token text budget in roughly 7 seconds of speech, at
+  which point the decoder reaches its length limit and stops — producing
+  the "transcribe a few seconds, silently drop the rest" behavior.
+
+This accounts for an I-2 observation the original hypothesis didn't explain
+cleanly: the 13-config parameter sweep produced byte-identical output.  A
+learned "stop after a phrase" behavior could in principle be nudged by
+sampling parameters; a hard decode-length cap cannot — which is exactly what
+byte-identical output across 13 configs demonstrates.
+
+**Why chunking is the correct fix (under the right model).**  Each chunk is
+an independent inference call with a fresh 224-token budget.  Keeping every
+silent-boundary chunk under ~7 seconds keeps it under the cap, so no chunk
+hits the length limit mid-content.  Same fix; the reason it works is the
+per-call decode-length reset, not a match to training-phrase length.
+
+**GenSRT's empirical contribution (the citable part).**
+- Characterization of the cutoff on real broadcast content (not synthetic
+  or benchmark audio): the ~7-second boundary, the mid-character truncation
+  (`�`) rate, and cue-density figures from the I-2 corpus (two Malayalam
+  news clips, native-reader validated).
+- The 13-config byte-identical parameter sweep establishing that the cutoff
+  is not inference-parameter-tunable — the evidence distinguishing a
+  structural cap from a learned behavior.
+- The silent-boundary chunking workaround
+  (`gensrt/asr/_silence_chunking.py`).
+
+**Subsequent observations — adalat-ai R-MFT (v1.2.1 recommended Malayalam
+model).**  Adalat AI's `whisper-medium-ml-rmft`, converted to CT2 and added
+in v1.2.1, sits under the same 224-token cap but stops more cleanly at the
+boundary.  Figures below are *Adalat AI's measurements using GenSRT* on the
+197s clip — attributed as theirs pending independent reproduction on the
+GenSRT side before being cited as GenSRT's own:
+- Mid-character truncation (`�`) rate ~10% (vegam) → ~2.6% (R-MFT).
+- Runtime ~296s (vegam) → ~154s (R-MFT) on an RTX 3060 Ti, same clip and
+  chunking plan.
+- Quality markedly better than vegam on English code-switching, entity
+  names, and place names (native-reader comparison).
+
+**OPEN sub-question — 1.00s chunk-tail fragments.**  R-MFT emits roughly a
+third of its cues as exactly-1.00s short fragments — typically common
+Malayalam verb endings (ആരോപിച്ചു, അറിയിച്ചു, ഉണ്ടാകും, ആയിരുന്നു) appearing
+as chunk-tail emissions; vegam shows about 1/5 as many.  They are
+perceptually invisible in playback (too brief to read) but appear in the SRT
+and matter for editing and translation.  Open question: whether inference
+parameters (temperature, beam_size, length_penalty, repetition_penalty)
+influence the emission rate, or whether it is structural to R-MFT's
+timestamp-token emission.  Plan: parameter sweep from the GenSRT side against
+the I-2 corpus with the chunking plan held fixed.  Feeds the v1.3 chunk-tail
+cleanup UI (related to I-4).
+
+**Citation note.**  Adalat AI has asked to cite GenSRT's investigation of the
+token-limit issue in a forthcoming technical report; GenSRT reciprocates.
+Contribution split for citation: root-cause diagnosis — Kavya Manohar /
+Adalat AI; empirical characterization on real broadcast content and the
+chunking workaround — GenSRT.
 
 ---
 
