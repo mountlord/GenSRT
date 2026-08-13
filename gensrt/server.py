@@ -332,6 +332,98 @@ def _validate_srt_save_path(path_str: str) -> tuple[Path, str | None]:
 _srt_write_lock = threading.Lock()
 
 
+# Prefix for the temp SRT copies staged for ffmpeg burn-in.  Kept as a module
+# constant because both the staging and the housekeeping sweep match on it.
+_BURN_STAGE_PREFIX = "gensrt_burn_"
+# Staged copies older than this are swept on the next burn.
+_BURN_STAGE_MAX_AGE_S = 24 * 60 * 60
+
+
+def resolve_drop_targets(paths: list[str]) -> tuple[str | None, str | None, bool]:
+    """Decide what a set of dropped file paths means.
+
+    Returns ``(video_path, srt_path, srt_is_explicit)``.
+
+    The rules, in order:
+
+    * A dropped video is loaded.
+    * A dropped SRT is loaded, and is *explicit* — the user named that exact
+      file, so sidecar discovery must not later substitute a different one.
+    * An SRT dropped alone also loads its sibling video, so the user gets a
+      working player rather than cues with nothing to play against.
+
+    That last rule used to discard the dropped path and let sidecar discovery
+    re-find it after the video loaded.  Discovery prefers ``<basename>.srt``,
+    so dropping ``clip.ml.srt`` loaded the video and then silently swapped in
+    ``clip.srt``.  Discovery is for when the user gave us no SRT; it must
+    never override one they did give us.
+    """
+    video_path = next(
+        (p for p in paths if Path(p).suffix.lower() in _VIDEO_EXTS), None
+    )
+    srt_path = next(
+        (p for p in paths if Path(p).suffix.lower() == ".srt"), None
+    )
+    srt_is_explicit = srt_path is not None
+
+    if srt_path and not video_path:
+        sibling = _find_sibling_video(Path(srt_path))
+        if sibling is not None:
+            video_path = str(sibling)
+
+    return video_path, srt_path, srt_is_explicit
+
+
+def _stage_srt_for_burn(srt_path: Path) -> Path:
+    """Copy *srt_path* to a temp file with a filtergraph-safe ASCII name.
+
+    See the comment in :func:`api_burn` for why this exists rather than an
+    escaping routine.  The staged name is ``gensrt_burn_<8 hex>.srt`` — only
+    ``[A-Za-z0-9_]`` plus the extension, so no layer of ffmpeg's argument
+    parsing has anything to chew on.
+
+    Bytes are copied verbatim; encoding is untouched, so a UTF-8 Malayalam
+    SRT reaches libass exactly as written.
+
+    Cleanup: the burn is deliberately detached and survives app close, so we
+    cannot delete the staged file when ffmpeg finishes without holding a
+    watcher process open.  Instead each call sweeps stale copies from previous
+    burns.  Files are a few KB, and the sweep is bounded by the temp dir
+    listing, so this stays cheap.
+
+    Returns:
+        Path to the staged copy.
+
+    Raises:
+        OSError: If the temp copy cannot be written.
+    """
+    import shutil
+    import tempfile
+    import time as _time
+    import uuid
+
+    tmp_dir = Path(tempfile.gettempdir())
+
+    # Housekeeping: drop staged copies from earlier runs.  Best-effort — a
+    # file we cannot remove (still open, permissions) is skipped silently.
+    cutoff = _time.time() - _BURN_STAGE_MAX_AGE_S
+    try:
+        for stale in tmp_dir.glob(f"{_BURN_STAGE_PREFIX}*.srt"):
+            try:
+                if stale.stat().st_mtime < cutoff:
+                    stale.unlink()
+                    logger.debug("Swept stale burn staging file: %s", stale.name)
+            except OSError:
+                continue
+    except OSError:
+        pass
+
+    staged = tmp_dir / f"{_BURN_STAGE_PREFIX}{uuid.uuid4().hex[:8]}.srt"
+    shutil.copyfile(srt_path, staged)
+    logger.debug("Staged %s → %s for burn-in", srt_path.name, staged.name)
+    return staged
+
+
 @app.route("/")
 def index():
     return render_template("review.html")
@@ -528,14 +620,17 @@ _MODEL_CHOICES = {
    # (see _v_str on the "model" field).  The dropdown options are sourced
    # from /api/known_models, which merges these built-ins with the user's
    # gensrt-known-models.json side file.
-_COMPUTE_CHOICES = {"float32", "float16", "int8_float16", "int8"}
+# "auto" defers to gpu_probe.default_compute_type_for(), which asks
+# CTranslate2 what the resolved device actually supports.
+_COMPUTE_CHOICES = {"auto", "float32", "float16", "int8_float16", "int8"}
 _DEVICE_CHOICES = {"cuda", "cpu", "auto"}
 _BACKEND_CHOICES = {"cuda", "rocm", "xpu", "cpu"}
-_ENGINE_CHOICES = {"google", "nllb", "marian", "none"}
+_ENGINE_CHOICES = {"google", "none"}
 _LOG_LEVEL_CHOICES = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
 
 _INT_KEYS = {
     "gpu_id", "vad_min_speech_ms", "vad_min_silence_ms", "vad_speech_pad_ms",
+    "max_line_chars", "max_lines",
 }
 
 
@@ -589,6 +684,8 @@ _CONFIG_VALIDATORS = {
     "vad_speech_pad_ms":       _v_num_range(0, 2000, integer=True),
     "max_subtitle_duration_s": _v_num_range(0.0, 60.0),
     "min_subtitle_duration_s": _v_num_range(0.0, 60.0),
+    "max_line_chars":          _v_num_range(0, 200, integer=True),
+    "max_lines":               _v_num_range(1, 10, integer=True),
     "translation_engine":      _v_str_in(_ENGINE_CHOICES),
     "translate":               _v_bool,
     "target_language":         _v_str,
@@ -597,6 +694,10 @@ _CONFIG_VALIDATORS = {
     "output_filename":         _v_str_or_null,
     "recurse":                 _v_bool,
     "log_level":               _v_str_in(_LOG_LEVEL_CHOICES),
+    # Diagnostics — a path, or "" to disable.  Deliberately not surfaced in
+    # the config UI: it is an investigation tool, not a user setting.
+    "debug_chunk_dir":         _v_str,
+    "dump_segments_dir":       _v_str,
 }
 
 
@@ -808,36 +909,162 @@ def api_validate_model():
     # HuggingFace metadata check: GET /api/models/<repo>.  This returns
     # JSON metadata if the repo exists and is accessible to the current
     # auth token (or public).  We deliberately do NOT load weights.
-    import urllib.request
-    import urllib.error
-    import json as _json
+    #
+    # `requests` rather than `urllib`, deliberately.  The two use different
+    # TLS trust stores on Windows: urllib goes through Python's ssl module to
+    # the Windows certificate store, while requests uses the certifi bundle —
+    # which is also what huggingface_hub uses to DOWNLOAD the model.  With
+    # urllib, validation could fail on a machine where the download would
+    # have worked perfectly (observed on a fresh Windows install whose root
+    # store was incomplete).  A validate button that rejects models the app
+    # can actually use is worse than no validate button.
+    import requests
 
     url = f"https://huggingface.co/api/models/{name}"
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "GenSRT/1.x"})
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            payload = _json.loads(resp.read().decode("utf-8"))
+        resp = requests.get(url, headers={"User-Agent": "GenSRT/1.x"}, timeout=10)
+
+        if resp.status_code in (401, 403):
+            return jsonify({"status": "error", "message": (
+                f"'{name}' exists but requires authentication. "
+                "Run `hf auth login` and request access on the model page."
+            )}), 400
+        if resp.status_code == 404:
+            return jsonify({"status": "error",
+                            "message": f"'{name}' was not found on HuggingFace."}), 400
+        if resp.status_code != 200:
+            return jsonify({"status": "error",
+                            "message": f"HuggingFace returned HTTP {resp.status_code}."}), 400
+
+        payload = resp.json()
+
         # Sanity: a real model card has a "modelId" or "id" field.
         if not isinstance(payload, dict) or not (payload.get("modelId") or payload.get("id")):
             return jsonify({"status": "error",
                             "message": "Response did not look like a model card."}), 400
+
+        # The metadata already lists the repo's files, so check the format
+        # while we are here.  "Found on HuggingFace" reads as approval, and a
+        # user who gets it then waits through a model download only to have
+        # transcription fail with "Unable to open file 'model.bin'" has been
+        # misled by us.  Costs no extra request.
+        problem = _ct2_format_problem(name, payload)
+        if problem:
+            return jsonify({"status": "error", "message": problem}), 400
+
         return jsonify({"status": "ok",
                         "message": f"Found '{name}' on HuggingFace."})
-    except urllib.error.HTTPError as exc:
-        if exc.code == 401 or exc.code == 403:
-            msg = (f"'{name}' exists but requires authentication. "
-                   "Run `hf auth login` and request access on the model page.")
-        elif exc.code == 404:
-            msg = f"'{name}' was not found on HuggingFace."
-        else:
-            msg = f"HuggingFace returned HTTP {exc.code}."
-        return jsonify({"status": "error", "message": msg}), 400
-    except urllib.error.URLError as exc:
+
+    except requests.exceptions.SSLError as exc:
+        # Certificate verification failure.  The bare OpenSSL text
+        # ("CERTIFICATE_VERIFY_FAILED ... unable to get local issuer
+        # certificate") is accurate and useless to anyone who does not
+        # already know what a CA bundle is, so say what usually causes it and
+        # what to do.  Seen on a freshly installed Windows whose root
+        # certificate store had not been populated yet.
+        return jsonify({"status": "error", "message": (
+            "Could not verify HuggingFace's security certificate. This is "
+            "usually a certificate problem on this computer rather than with "
+            "the model.\n\n"
+            "Try, in order:\n"
+            "1. Open https://huggingface.co in your browser once, then retry "
+            "— Windows fetches missing certificates on demand.\n"
+            "2. Check this computer's date and time are correct.\n"
+            "3. If you are on a corporate or school network, antivirus or a "
+            "network filter may be intercepting secure connections; your IT "
+            "team can advise.\n\n"
+            f"Technical detail: {exc}"
+        )}), 400
+    except OSError as exc:
+        # requests raises OSError (not SSLError) when REQUESTS_CA_BUNDLE,
+        # CURL_CA_BUNDLE or SSL_CERT_FILE points somewhere unusable. Worth
+        # naming, because the cause is an environment variable the user may
+        # have set long ago and forgotten — often while working around an
+        # earlier certificate problem.
+        if "CA certificate" in str(exc) or "certificate bundle" in str(exc):
+            import os as _os
+
+            culprits = [
+                f"{v}={_os.environ[v]}"
+                for v in ("REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "SSL_CERT_FILE")
+                if _os.environ.get(v)
+            ]
+            detail = (
+                "\n\nThese environment variables are currently set:\n  "
+                + "\n  ".join(culprits)
+                if culprits else
+                "\n\nNo CA-bundle environment variables appear to be set, so "
+                "the installation itself may be incomplete."
+            )
+            return jsonify({"status": "error", "message": (
+                "The TLS certificate bundle this computer is configured to use "
+                "could not be read.\n\n"
+                "This is a configuration problem on this machine, not a problem "
+                "with the model. It is usually caused by REQUESTS_CA_BUNDLE, "
+                "CURL_CA_BUNDLE or SSL_CERT_FILE pointing at a file that has "
+                "been moved or deleted. Clearing those variables restores the "
+                "default behaviour."
+                f"{detail}\n\nTechnical detail: {exc}"
+            )}), 400
         return jsonify({"status": "error",
-                        "message": f"Network error contacting HuggingFace: {exc.reason}"}), 400
+                        "message": f"Validation failed: {exc}"}), 400
+    except requests.exceptions.Timeout:
+        return jsonify({"status": "error", "message": (
+            "Timed out contacting HuggingFace. Check your internet connection "
+            "and try again."
+        )}), 400
+    except requests.exceptions.RequestException as exc:
+        return jsonify({"status": "error",
+                        "message": f"Network error contacting HuggingFace: {exc}"}), 400
     except Exception as exc:
         return jsonify({"status": "error",
                         "message": f"Validation failed: {exc}"}), 400
+
+
+# Files that identify a CTranslate2-converted model, and files that identify
+# the unconverted PyTorch original. GenSRT runs on CTranslate2 via
+# faster-whisper and cannot load the latter.
+_CT2_MARKER = "model.bin"
+_TRANSFORMERS_MARKERS = ("pytorch_model.bin", "model.safetensors",
+                         "flax_model.msgpack", "tf_model.h5")
+
+
+def _ct2_format_problem(name: str, payload: dict) -> str | None:
+    """Return a user-facing message if *payload* is not a CTranslate2 model.
+
+    ``None`` means "looks loadable, or we could not tell".  Being unsure is
+    deliberately treated as fine: the file list is advisory, and blocking a
+    model that would actually have worked is worse than letting the load-time
+    error speak.
+    """
+    siblings = payload.get("siblings")
+    if not isinstance(siblings, list) or not siblings:
+        return None   # no file list available — do not guess
+
+    files = {
+        s.get("rfilename", "") for s in siblings if isinstance(s, dict)
+    }
+    if any(f == _CT2_MARKER or f.endswith("/" + _CT2_MARKER) for f in files):
+        return None
+
+    if any(m in files for m in _TRANSFORMERS_MARKERS):
+        suggestion = ""
+        # Many publishers ship the converted variant under a ct2- prefix.
+        if "/" in name:
+            org, repo = name.split("/", 1)
+            suggestion = f" Look for '{org}/ct2-{repo}' or a similar variant."
+        return (
+            f"'{name}' is a PyTorch/transformers model. GenSRT runs on "
+            f"CTranslate2 and needs a converted model.{suggestion} "
+            f"Alternatively convert it yourself with: "
+            f"ct2-transformers-converter --model {name} --output_dir <dir> "
+            f"--quantization float16"
+        )
+
+    return (
+        f"'{name}' does not contain a CTranslate2 '{_CT2_MARKER}'. GenSRT "
+        f"may not be able to load it."
+    )
 
 
 @app.route("/api/add_known_model", methods=["POST"])
@@ -1206,10 +1433,31 @@ def api_burn():
 
     from gensrt.ffmpeg_util import get_ffmpeg_exe
 
+    # The SRT is handed to the `subtitles` libavfilter, whose argument goes
+    # through THREE layers of parsing (filtergraph → filter options → the
+    # filename itself).  Characters that are perfectly ordinary in a media
+    # filename — [ ] , ; ' = : — are metacharacters at one or more of those
+    # layers.  "Movie [1080p].srt" breaks the filtergraph outright, and
+    # scene-release names like that are the norm in this user population.
+    #
+    # Escaping across three layers correctly is possible but genuinely
+    # error-prone, and gets harder with non-ASCII names — exactly the case
+    # GenSRT cares most about.  So instead of escaping we sidestep: copy the
+    # SRT to a temp file whose name is guaranteed-safe ASCII, and point the
+    # filter at that.  Nothing to escape, nothing to get subtly wrong, and it
+    # works for any source filename in any script.
+    try:
+        safe_srt = _stage_srt_for_burn(srt_path)
+    except OSError as exc:
+        return jsonify({
+            "status": "error",
+            "message": f"Could not stage subtitle file for burn-in: {exc}",
+        }), 500
+
     cmd = [
         get_ffmpeg_exe(), "-y",
         "-i", str(video_path),
-        "-vf", f"subtitles={srt_path.name}",
+        "-vf", f"subtitles={safe_srt.name}",
         "-c:v", "libx264", "-crf", "18", "-preset", "medium",
         "-c:a", "copy",
         str(output_path),
@@ -1218,7 +1466,7 @@ def api_burn():
     # Spawn flags so the child survives app close and doesn't pop a
     # console window on Windows.  No effect on POSIX.
     popen_kwargs: dict[str, Any] = {
-        "cwd":    str(srt_path.parent),
+        "cwd":    str(safe_srt.parent),
         "stdout": subprocess.DEVNULL,
         "stderr": subprocess.DEVNULL,
         "stdin":  subprocess.DEVNULL,
@@ -1609,28 +1857,20 @@ def launch_server(
             if not paths:
                 return
 
-            video_path = next((p for p in paths if Path(p).suffix.lower() in _VIDEO_EXTS), None)
-            srt_path   = next((p for p in paths if Path(p).suffix.lower() == ".srt"), None)
-
-            # If user dropped an SRT alone, try to find a sibling video next
-            # to it.  This is the symmetrical counterpart of the sidecar-SRT
-            # auto-discovery that fires when a video is dropped.  When a
-            # sibling video is found, we route through the video-load path —
-            # the sidecar hook in project.js will then re-discover and load
-            # this same SRT, so we don't issue a separate gensrtLoadSrtFromPath.
-            if srt_path and not video_path:
-                sibling = _find_sibling_video(Path(srt_path))
-                if sibling is not None:
-                    video_path = str(sibling)
-                    srt_path = None
+            video_path, srt_path, srt_is_explicit = resolve_drop_targets(paths)
 
             if video_path:
+                # skipSidecar when we already have the user's SRT in hand.
+                opts = ", { skipSidecar: true }" if srt_is_explicit else ""
                 window.evaluate_js(
-                    f"window.tilesterSetVideoPath && window.tilesterSetVideoPath({json.dumps(video_path)});"
+                    f"window.tilesterSetVideoPath && "
+                    f"window.tilesterSetVideoPath({json.dumps(video_path)}{opts});"
                 )
             if srt_path:
                 window.evaluate_js(
-                    f"window.gensrtLoadSrtFromPath && window.gensrtLoadSrtFromPath({json.dumps(srt_path)});"
+                    f"window.gensrtLoadSrtFromPath && "
+                    f"window.gensrtLoadSrtFromPath({json.dumps(srt_path)}, "
+                    f"{{ skipSiblingVideo: true }});"
                 )
         except Exception:
             logger.exception("Drop handler failed")

@@ -168,7 +168,7 @@ signal.  Full diagnostics can be added via a future
 Two Malayalam news clips reviewed by native Malayalam reader (project
 maintainer) with side-by-side audio playback and SRT reading:
 
-**Clip 1 — FIFA World Cup news (197s, dense news anchor speech):**
+**Clip 1 — MalayalamNews.mp4 (197.3s, dense news anchor speech):**
 
 - 49 cues
 - 86% chunks cut at detected silence
@@ -176,7 +176,7 @@ maintainer) with side-by-side audio playback and SRT reading:
 - Native-reader verdict: "very high accuracy", "almost perfect
   timing", "no other model produces anything close"
 
-**Clip 2 — second Malayalam news clip (268s, watched for the
+**Clip 2 — MalayalamNews-2.mp4 (274.0s, watched for the
 first time during verification):**
 
 - 66 cues

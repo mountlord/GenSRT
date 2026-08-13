@@ -9,7 +9,7 @@ automatically so the two never drift apart.
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, fields
 from enum import Enum, auto
 from pathlib import Path
 from typing import Any
@@ -37,8 +37,6 @@ class TranslationEngineKey(str, Enum):
     """Translation engine selector."""
 
     GOOGLE = "google"
-    NLLB = "nllb"
-    MARIAN = "marian"
     NONE = "none"
 
 
@@ -56,11 +54,54 @@ class ComputeType(str, Enum):
 class SRTSegment:
     """A single subtitle entry before SRT formatting.
 
-    Attributes:
-        index:      1-based subtitle index.
-        start:      Start time in seconds.
-        end:        End time in seconds.
-        text:       Subtitle text (translated or original).
+    The first four fields are the subtitle itself.  Everything after them is
+    *diagnostics* — what the model reported about its own output, and where
+    the segment sat in the chunk plan.  All of it is optional and defaults to
+    ``None``, so a segment built by hand (a test, a loaded SRT file) is still
+    valid.
+
+    Decoder metrics
+    ---------------
+    These come straight from faster-whisper's ``Segment`` and describe how the
+    decode went.  Whisper generates text one token at a time, assigning each a
+    probability; these are summaries of that process.
+
+        avg_logprob
+            Mean log-probability per token.  Always negative; closer to zero
+            means the model was more confident.  Roughly: -0.2 is a confident
+            decode, -1.0 is shaky, below -1.5 is usually noise.  This is the
+            single most useful signal for separating real speech from
+            hallucinated filler, because a model that is inventing text is
+            typically unsure while doing it.
+
+        compression_ratio
+            Length of the text divided by its gzip-compressed length.  Normal
+            prose sits near 1.2-2.0.  Repetitive text compresses extremely
+            well, so a runaway loop ("ആരോപിച്ചു ആരോപിച്ചു ആരോപിച്ചു…") pushes
+            this up sharply.  faster-whisper treats anything above 2.4 as a
+            failed decode by default.
+
+        no_speech_prob
+            The model's own estimate that this audio contains no speech at
+            all.  High values on a segment that nonetheless produced text
+            indicate the model wrote words over silence or noise.
+
+        temperature
+            The sampling temperature the *successful* decode ran at.  0.0
+            means the first attempt passed the quality gates.  Anything higher
+            means earlier attempts failed and were retried — so a non-zero
+            value is itself evidence the decoder struggled here.
+
+    Chunk position
+    --------------
+    Only populated by the chunked engine.  This is information GenSRT has that
+    a general-purpose cleaner does not: "chunk-tail fragment" is a structural
+    claim, and these fields let it be tested directly rather than inferred
+    from duration.
+
+        chunk_index       1-based chunk this segment came from
+        chunk_position    1-based position within that chunk
+        chunk_n_segments  how many segments that chunk emitted in total
     """
 
     index: int
@@ -68,12 +109,58 @@ class SRTSegment:
     end: float
     text: str
 
+    # Decoder metrics (see class docstring).
+    avg_logprob: float | None = None
+    compression_ratio: float | None = None
+    no_speech_prob: float | None = None
+    temperature: float | None = None
+
+    # Chunk provenance (chunked engine only).
+    chunk_index: int | None = None
+    chunk_position: int | None = None
+    chunk_n_segments: int | None = None
+
+    @property
+    def duration(self) -> float:
+        """Display duration in seconds, as the model timed it."""
+        return max(0.0, self.end - self.start)
+
+    @property
+    def is_chunk_tail(self) -> bool:
+        """True when this was the last segment its chunk emitted.
+
+        The chunk-tail hypothesis is that spurious short fragments cluster
+        here — the decoder, having reached the end of the audio it was given,
+        emits one more low-confidence token group before stopping.  Unknown
+        provenance returns False rather than guessing.
+        """
+        if self.chunk_position is None or self.chunk_n_segments is None:
+            return False
+        return self.chunk_position == self.chunk_n_segments
+
+    @property
+    def is_chunk_sole(self) -> bool:
+        """True when this segment was the *only* output of its chunk.
+
+        Distinguished from :attr:`is_chunk_tail` because a sole segment is
+        both head and tail, and lumping the two together would inflate any
+        measurement of tail behaviour.
+        """
+        return self.chunk_n_segments == 1
+
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> SRTSegment:
-        return cls(**data)
+        """Build from a dict, ignoring keys this version does not know.
+
+        Tolerant on purpose: segment dicts are written to disk by the
+        diagnostics dump and read back by analysis code, and a field added or
+        removed between versions should not break that round trip.
+        """
+        known = {f.name for f in fields(cls)}
+        return cls(**{k: v for k, v in data.items() if k in known})
 
 
 # ── Transcription configuration ───────────────────────────────────────────
@@ -89,8 +176,14 @@ class TranscriptionConfig:
 
     # Model
     model: str = "large-v3-turbo"
-    device: str = "cuda"
-    compute_type: str = "float16"
+    # "auto" probes the hardware; "cuda" / "cpu" are honoured as explicit
+    # requests (see operations.build_transcription_config).  Through v1.2.1
+    # this defaulted to "cuda" and was overwritten by the probe regardless,
+    # which made the field unusable as an override.
+    device: str = "auto"
+    # "auto" means "derive from the resolved device" — CTranslate2 is asked
+    # what the device actually supports rather than assuming float16.
+    compute_type: str = "auto"
     gpu_id: int = 0
 
     # Language
@@ -105,7 +198,24 @@ class TranscriptionConfig:
 
     # SRT output
     max_subtitle_duration_s: float = 3.0    # cap subtitle display time; 0 = no cap
-    min_subtitle_duration_s: float = 1.0    # floor subtitle display time; 0 = no floor
+    # Floor subtitle display time; 0 = no floor.
+    #
+    # NOTE FOR MEASUREMENT WORK: a non-zero floor rewrites the end timestamp
+    # of every shorter cue, collapsing their true durations to this exact
+    # value in the written SRT.  Set to 0 before characterising a model's
+    # timestamp behaviour, or measure on the pre-build_srt segments.
+    min_subtitle_duration_s: float = 1.0
+    max_line_chars: int = 42                # soft per-line wrap budget
+    max_lines: int = 2                      # preferred lines per cue (never truncates)
+
+    # Diagnostics.  When set, the chunked ASR engine exports every chunk's
+    # audio plus a decode-telemetry manifest under
+    # <debug_chunk_dir>/<audio stem>/.  Off by default; costs nothing unset.
+    debug_chunk_dir: str = ""
+    # When set, the raw ASR segment table is written to this directory as
+    # <audio stem>.segments.csv — before post-processing and before
+    # translation.  See gensrt/segment_dump.py.
+    dump_segments_dir: str = ""
 
     # Translation
     translation_engine: str = "google"

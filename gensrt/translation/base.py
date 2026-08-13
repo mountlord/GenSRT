@@ -42,7 +42,7 @@ class TranslationEngine(ABC):
         Default implementation calls :meth:`translate` per item with per-item
         error handling so one bad segment never aborts the whole batch.
         Engines with native batch support (e.g. Google GTX glue-string,
-        MarianMT tokeniser) should override this.
+        tokeniser) should override this.
 
         Args:
             texts:           List of texts to translate.

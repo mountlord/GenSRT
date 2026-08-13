@@ -39,33 +39,6 @@ VAD_ENABLED_DEFAULT: bool = True
 # ---------------------------------------------------------------------------
 DEFAULT_TRANSLATION_ENGINE: str = "google"
 
-# NLLB model ID on HuggingFace
-NLLB_MODEL_ID: str = "facebook/nllb-200-distilled-600M"
-
-# MarianMT model IDs per language
-MARIAN_MODELS: dict[str, str] = {
-    "ja": "Helsinki-NLP/opus-mt-ja-en",
-    "ko": "Helsinki-NLP/opus-mt-ko-en",
-    "ml": "Helsinki-NLP/opus-mt-ml-en",
-}
-
-# NLLB language codes (flores-200 format)
-NLLB_LANGUAGE_CODES: dict[str, str] = {
-    "ja": "jpn_Jpan",
-    "ko": "kor_Hang",
-    "ml": "mal_Mlym",
-    "en": "eng_Latn",
-    "fr": "fra_Latn",
-    "de": "deu_Latn",
-    "es": "spa_Latn",
-    "zh": "zho_Hans",
-    "ar": "arb_Arab",
-    "hi": "hin_Deva",
-    "pt": "por_Latn",
-    "ru": "rus_Cyrl",
-    "it": "ita_Latn",
-}
-
 # ---------------------------------------------------------------------------
 # Audio extraction
 # ---------------------------------------------------------------------------

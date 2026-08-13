@@ -435,18 +435,17 @@ languages). For translation:</p>
 <li><strong>Google Translate</strong> is the default and supports any → any
 translation. This is what you want for Malayalam, Tamil, Telugu,
 Bengali, Hindi, etc. Requires an internet connection.</li>
-<li><strong>NLLB-200</strong> (Meta) and <strong>MarianMT</strong> (Helsinki-NLP) are offline
-engines, but they only translate <em>to English</em>. They're useful if
-you're transcribing Korean / Japanese / etc. into English and
-don't want to depend on Google.</li>
+<li><strong>None</strong> transcribes without translating, leaving subtitles in
+the language that was spoken.</li>
 <li><strong>None (passthrough)</strong> — keeps subtitles in the source language
 with no translation.</li>
 </ul>
 
-<p>If you pick Marian or NLLB with a non-English target, the app will
-refuse with a clear message ("Target language 'ml' is only supported
-by the 'google' translation engine…"). Switch to Google or change
-the target to English.</p>
+<p>Earlier versions also shipped two offline engines, NLLB-200 and
+MarianMT. They were removed in v1.2.5: both could only ever translate
+<em>to English</em>, and each pulled in a ~2.5&nbsp;GB PyTorch
+dependency for that one direction. If an old config file still names
+one, GenSRT says so and points you at Google.</p>
 
 <hr>
 
@@ -649,9 +648,10 @@ about filenames.</p>
 
 <p><strong>The SRT file appears next to the video, but the right pane is
 empty.</strong><br>
-Check the engine selector in the footer. If you picked Marian or NLLB
-with a non-English target, the job fails silently in some setups.
-Switch to Google.</p>
+Check the engine selector in the footer, and check the log for a
+translation error. Google translation needs a network connection; if
+it is unreachable the original text is kept rather than the job
+failing.</p>
 
 <p><strong>Subtitles appear slightly before the speaker actually starts
 speaking.</strong><br>

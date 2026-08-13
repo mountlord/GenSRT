@@ -85,7 +85,7 @@ that match vegam's training distribution should eliminate the drops.
 3. **Validate qualitatively.**  Two Malayalam news clips with native-
    reader review.  First clip (FIFA World Cup news, 197s): 49 cues,
    86% silence cuts, 8.2% mid-character truncation, "very high
-   accuracy, almost perfect timing."  Second clip (general news, 268s):
+   accuracy, almost perfect timing."  Second clip — MalayalamNews-2.mp4 (274.0s):
    66 cues, similar density, "beats realtime closed captioning by a
    mile."
 
@@ -210,17 +210,109 @@ GenSRT side before being cited as GenSRT's own:
 - Quality markedly better than vegam on English code-switching, entity
   names, and place names (native-reader comparison).
 
-**OPEN sub-question — 1.00s chunk-tail fragments.**  R-MFT emits roughly a
-third of its cues as exactly-1.00s short fragments — typically common
-Malayalam verb endings (ആരോപിച്ചു, അറിയിച്ചു, ഉണ്ടാകും, ആയിരുന്നു) appearing
-as chunk-tail emissions; vegam shows about 1/5 as many.  They are
-perceptually invisible in playback (too brief to read) but appear in the SRT
-and matter for editing and translation.  Open question: whether inference
-parameters (temperature, beam_size, length_penalty, repetition_penalty)
-influence the emission rate, or whether it is structural to R-MFT's
-timestamp-token emission.  Plan: parameter sweep from the GenSRT side against
-the I-2 corpus with the chunking plan held fixed.  Feeds the v1.3 chunk-tail
-cleanup UI (related to I-4).
+**RESOLVED sub-question — short chunk-tail fragments.**  Characterised in
+full on 2026-08-10; the earlier "roughly a third of cues, exactly 1.00s"
+description was partly a measurement artifact and is superseded below.
+
+*Corpus:* MalayalamNews.mp4 (197.3s, 43 chunks) and MalayalamNews-2.mp4
+(274.0s, 58 chunks), both Asianet Malayalam news.  Six R-MFT runs across two
+machines (RTX 3060 Ti, RTX 3060 Laptop), chunk plan identical in every run.
+
+**Rate.**  40.4%–43.4% of emitted cues are sub-second, stable across clips,
+machines and repeat runs.  vegam on the same clips: 9.1%–10.6%.  The ratio is
+therefore ~4:1, close to the ~5:1 previously estimated.
+
+**True durations.**  min 0.020s, **median 0.060s**, max 0.620s.  Not ~1.00s.
+The earlier figure was produced by GenSRT's own `min_subtitle_duration_s: 1`
+floor rewriting every shorter cue to exactly `start + 1.000s`; the observation
+had been made on written SRT files, downstream of that floor.  This is a
+correction of roughly 17x in magnitude and it changes what the artifact *is*:
+at 60ms these are not short utterances but timestamp emissions with a
+collapsed span.
+
+**Physical implausibility.**  Fragments carry a median 74–88 characters per
+second against 14–16 for the same models' normal cues.  ആയിരുന്നു (9
+characters, 4–5 syllables) appears with a 0.020s span — roughly 20x faster
+than Malayalam is spoken.  No human utterance is being transcribed here.
+
+**Bimodality.**  Across 240 cues on two clips, nothing falls between 0.62s and
+1.25s.  Any threshold in that band separates the two populations completely.
+
+**Structure — the mechanism.**  Chunk shapes over 101 chunks:
+
+| shape | chunks |
+|---|---|
+| (N) | 44 |
+| (N, F) | 36 |
+| (N, F, F) | 19 |
+| (N, F, F, F) | 1 |
+| (N, N, F) | 1 |
+
+Every chunk begins with exactly one normal cue.  Fragments only ever trail.
+No chunk starts with a fragment, and only once in 101 chunks does normal
+speech follow one.  `is_chunk_tail` fires on **zero of 220 normal cues**
+across three runs and two clips.  The chunk-tail framing is confirmed
+structurally, not inferred from duration.
+
+**Not caused by chunk boundaries.**  Native-reader listening to the exported
+chunk audio confirmed every boundary falls in real silence with no word
+sliced, on both clips.  The most obvious competing explanation is eliminated.
+
+**All spurious.**  Native-reader adjudication of the full fragment population
+on MalayalamNews-2 (43 cues) and of the one contested case on MalayalamNews
+(മത്സരം) found every fragment spurious.  In each contested case the fragment's
+text already appeared in its own chunk's first cue — the decoder re-emitting a
+word it had just transcribed.
+
+**Reproducibility, and what it points to.**  Two identical R-MFT runs on GPU
+(`float16`) differ by one cue.  All 59 real cues are byte-identical between
+runs; every difference is inside the fragment population.  Transcription is
+reproducible, the fragments are not.  vegam by contrast differs in 8 real cues
+between identical runs, which follows from its temperature-fallback behaviour
+(see I-9).
+
+On **CPU with `int8`**, two runs of MalayalamNews-2 were byte-identical —
+101 cues, 42 floored, 41 clamped, and all nine duration-histogram buckets
+matching exactly.  So the residual GPU variation is precision-dependent, not
+inherent to the model: it is consistent with cuBLAS kernel selection under
+`float16`, which integer arithmetic does not have the same freedom to vary.
+This also gives a practical answer for anyone needing reproducible output —
+run `int8`, on CPU if necessary — at roughly 15x the wall time (2448.8s vs
+162.2s on comparable hardware).
+
+`int8` and `float16` produce the same cue structure and near-identical text.
+Where they differ, it is in passages the model is least confident about: on
+this corpus, English sports commentary that a Malayalam-only fine-tune renders
+phonetically.  Both precisions are wrong there, differently.  The precision
+does not cause those errors; it moves them.
+
+**Detection.**  Duration alone separates the populations at 100% precision and
+100% recall on both clips against native-reader labels.  `avg_logprob`
+performs worse (4 false positives on clip 2).  `compression_ratio` is
+*inverted* for this artifact — median 0.79 for fragments against 1.70 for
+normal cues, because gzip does not compress a nine-character string — so
+repetition-based detectors do not apply.  `is_chunk_tail` gives 100% precision
+at 70–76% recall and is best used as corroboration rather than as the primary
+signal.
+
+*Remaining open:* whether decode parameters influence the emission rate.  This
+is now a lower priority: duration filtering resolves the practical problem at
+100% precision, so the parameter sweep would refine understanding rather than
+unblock the cleanup feature.  Any such sweep must run against raw
+`SRTSegment` output or with `min_subtitle_duration_s: 0`, and must establish a
+noise floor first — repeat runs vary by ~0.5–1.6 percentage points.
+
+*Instrumentation added (v1.2.2–v1.2.5), so this stays measurable:*
+`run_pipeline` logs the raw duration histogram before post-processing;
+`build_srt` logs whenever the floor fires and what the true durations were;
+`SRTSegment` carries `avg_logprob`, `compression_ratio`, `no_speech_prob`,
+`temperature` and chunk provenance; `--dump-segments` writes the raw segment
+table to CSV; `--debug-chunks` exports per-chunk audio and telemetry.
+
+*Contribution split:* root-cause diagnosis of the underlying decode-length cap
+credited to Kavya Manohar / Adalat AI.  The empirical characterisation above —
+rate, true durations, chunk-shape structure, detection evaluation and the
+measurement correction — is GenSRT's.
 
 **Citation note.**  Adalat AI has asked to cite GenSRT's investigation of the
 token-limit issue in a forthcoming technical report; GenSRT reciprocates.
@@ -255,6 +347,125 @@ reasons.
 ---
 
 ## Future investigations
+
+### I-9: vegam's slow chunks are temperature fallback, and it costs reproducibility
+
+**Status:** `RESOLVED` — mechanism confirmed from decoder telemetry.
+
+**Observation.**  On MalayalamNews.mp4 with vegam, 10 of 43 chunks consumed
+78% of decode time — 15–32s each against a median of 1.8s.  The slow set was
+*identical* across repeated runs, so the cause is a property of the audio
+content rather than scheduling noise.  On MalayalamNews-2.mp4 the effect is
+larger still: 20 of 58 chunks, 88% of decode time.
+
+**Mechanism.**  faster-whisper re-decodes from scratch at successively higher
+temperatures (0.0, 0.2, 0.4, 0.6, 0.8, 1.0) whenever a decode fails its
+`compression_ratio_threshold` (2.4) or `log_prob_threshold` (-1.0) check.  Six
+passes at `beam_size=5` accounts for the observed ~10x per-chunk penalty.
+Per-segment telemetry confirms it directly: slow chunks report temperatures up
+to **1.0** with compression ratios of 2.05–2.20, sitting right at the
+rejection threshold.  R-MFT on the same clips and the same chunk plan reaches
+a maximum temperature of 0.2 and produces **zero** slow chunks.
+
+Caveat: 13 of 20 slow chunks report temperature 0.0, so fallback explains most
+of the cost but not all.  What makes those chunks expensive is unresolved.
+
+**Consequence 1 — speed.**  Same machine (RTX 3060 Laptop), same clip, same
+58-chunk plan: vegam 514.7s, R-MFT 162.2s.  **3.2x.**  On an RTX 3060 Ti with
+MalayalamNews.mp4 and translation enabled: vegam 280.2s, R-MFT 128.9s
+(2.2x).  R-MFT is *not* faster per chunk — its median chunk decode is slightly
+slower — the entire difference is the absence of the pathology.
+
+**Consequence 2 — reproducibility.**  Sampling above temperature 0 is
+stochastic by construction, so any chunk that enters fallback is a coin toss.
+Two identical vegam runs on the same machine produced 66 cues both times but
+differed in **8 real cues**, with different words at identical timestamps.
+R-MFT differed by one cue, entirely within the fragment population, with all
+59 real cues byte-identical.
+
+**Consequence 3 — output quality.**  A blind native-reader comparison (the
+listener did not know which SRT came from which model) found R-MFT better on
+both detection and accuracy.  vegam's errors sit inside full-length cues —
+including an outright repetition loop, `പി ചെയ്യ് പീ ചെയ്യ് പീ ചെയ്യ്`, in a
+4.66s cue — and are not removable by post-processing.  R-MFT's errors are
+predominantly the sub-second fragments of I-7, which duration filtering
+removes at 100% precision.
+
+**Interpretation.**  One property with four visible consequences.  If R-MFT's
+fine-tuning suppresses repetition, that keeps `compression_ratio` below the
+rejection threshold, which prevents the fallback ladder, which yields the
+speed advantage *and* the reproducibility advantage as side effects, while
+the repetition suppression itself is the quality advantage.  This is
+GenSRT-side inference from external measurement; whether the fine-tuning was
+in fact aimed at repetition is a question for Adalat AI.
+
+**Bearing on I-2.**  I-2 records a 13-config byte-identical parameter sweep on
+vegam.  Given that vegam output is *not* reproducible run-to-run on this
+corpus, that result warrants re-examination before it is cited — either the
+sweep hit a hard structural truncation where output was stable regardless, or
+it ran on a numerically different path.  Flagged rather than resolved.
+
+**Caveats.**  Two clips, one listener, six adjudicated divergences.  Strong
+enough to inform a model recommendation; not a benchmark.  Timings are for
+Malayalam broadcast news on consumer NVIDIA hardware; audio that does not
+trigger fallback would narrow the gap considerably.
+
+---
+
+### I-10: WhisperJAV post-processing modules — evaluated, not adopted
+
+**Status:** `RESOLVED NEGATIVE` — mechanisms sound, no target in this corpus.
+
+WhisperJAV (github.com/meizhong986/WhisperJAV, MIT) contains two modules that
+appeared to map onto GenSRT's open cleanup problems.  Both were read at source
+and evaluated against the I-7 corpus.  Neither was adopted.
+
+**`segment_filters.py` — short-segment confidence gate.**  Drops segments
+below an `avg_logprob` threshold, with a different threshold for short
+segments.  Three findings:
+
+1. The margin runs the opposite way to what GenSRT needs.  The code computes
+   `threshold - margin` with a positive margin, which on a negative threshold
+   makes short segments *harder* to filter.  Defensible for their domain,
+   where short utterances are genuinely low-confidence but real; inverted for
+   ours.
+2. It performs worse than duration.  `avg_logprob` separated cleanly on one
+   clip but produced 4 false positives on the other.  Duration alone: 100%
+   precision and recall on both.
+3. GenSRT has a better signal that a general-purpose cleaner cannot have.
+   `is_chunk_tail` derives from GenSRT's own chunk plan and fires on zero of
+   220 normal cues.
+
+**`cross_subtitle_processor.py` — consecutive-duplicate merge.**  Requires
+three or more consecutive near-duplicate cues (`DEDUP_THRESHOLD = 3`).  Across
+four segment dumps this corpus contains **zero** such runs; the chunk-tail
+fragments occur in runs of one to three *following* a normal cue, so pairs at
+most.  Its whole-file high-density phrase detector matches on
+`\p{Hiragana}|\p{Katakana}|[一-龯々ヶ]` and returns an empty list on
+Malayalam.  Its `_merge_subtitle_group` also re-imposes a 1.0s minimum
+duration — the exact artifact corrected in I-7.
+
+**No repetition to clean.**  Across all four dumps, maximum
+`compression_ratio` on a real cue is 2.33 and **no cue exceeds
+faster-whisper's 2.4 repetition threshold**.  R-MFT does not produce the
+within-cue repetition these modules target.
+
+**Qualifier.**  This is an R-MFT result.  vegam *does* produce repetition —
+compression ratios of 2.05–2.20 on its slow chunks, and an outright loop in
+one adjudicated cue (I-9).  The modules are aimed at a real phenomenon; it is
+one R-MFT appears to have addressed upstream.  Since R-MFT is the recommended
+Malayalam model, adopting them would mean carrying code and an MIT attribution
+obligation for a case GenSRT does not hit.
+
+**What was taken.**  One idea, not code: WhisperJAV runs its cleaners as
+individually-toggleable stages, each emitting a modifications log recording
+every change with its type, the original text and a confidence.  That is the
+honest-signal philosophy applied to cleanup, and it is the natural data model
+for the planned chunk-tail cleanup UI — the user sees each proposed removal
+and accepts or rejects it rather than the tool quietly sanitising.  Adopted as
+a design pattern; no source carried over, so no attribution rides along.
+
+---
 
 ### I-4: Hallucination-repetition post-processor
 

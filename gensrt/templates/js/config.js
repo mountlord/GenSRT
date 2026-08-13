@@ -29,12 +29,12 @@ const configSchema = {
     'device': {
       type: 'select',
       options: ['auto', 'cuda', 'cpu'],
-      hint: 'Computation device.  "auto" picks GPU when available.',
+      hint: 'Computation device.  "auto" picks GPU when available; "cpu" forces CPU even on a CUDA machine.',
     },
     'compute_type': {
       type: 'select',
-      options: ['float32', 'float16', 'int8_float16', 'int8'],
-      hint: 'Numeric precision.  float16 is fastest on modern GPUs; int8 for slow hardware.',
+      options: ['auto', 'float32', 'float16', 'int8_float16', 'int8'],
+      hint: 'Numeric precision.  "auto" asks CTranslate2 what this device supports.  float16 is fastest on modern GPUs; int8 for slow hardware.',
     },
     'backend': {
       type: 'select',
@@ -75,6 +75,14 @@ const configSchema = {
       type: 'number', min: 0, max: 60, step: 0.5,
       hint: 'Maximum SRT line length (seconds).  Long Whisper segments are split when they exceed this.',
     },
+    'max_line_chars': {
+      type: 'number', min: 0, max: 200, step: 1,
+      hint: 'Characters per subtitle line before wrapping.  42 is the broadcast convention.  Text is never discarded — a long cue wraps onto more lines instead.',
+    },
+    'max_lines': {
+      type: 'number', min: 1, max: 10, step: 1,
+      hint: 'Preferred lines per subtitle.  A soft target: cues that need more lines get them rather than losing text.',
+    },
   },
   'Translation': {
     'translate': {
@@ -83,7 +91,7 @@ const configSchema = {
     },
     'translation_engine': {
       type: 'select',
-      options: ['google', 'nllb', 'marian', 'none'],
+      options: ['google', 'none'],
       hint: 'Default translation backend.  Footer selector overrides per job.',
     },
     'target_language': {
@@ -91,7 +99,7 @@ const configSchema = {
       options: ['en', 'es', 'fr', 'de', 'pt', 'ru', 'zh', 'ja', 'ko',
                 'ar', 'hi', 'ml', 'ta', 'te', 'bn', 'id', 'vi', 'th',
                 'tr', 'pl'],
-      hint: 'Target language code (ISO 639-1).  Non-English targets are only supported by the "google" engine — Marian and NLLB stay X→English.',
+      hint: 'Target language code (ISO 639-1), e.g. en, ko, ja, hi. Translation is skipped when it matches the detected source language.',
     },
   },
   'System': {

@@ -17,6 +17,7 @@ function works in tqdm-driven CLI mode and polling-driven GUI mode.
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -39,32 +40,24 @@ def _noop_progress(_c: int, _t: int) -> None:
 
 
 def validate_translation_config(config: TranscriptionConfig) -> None:
-    """Reject translation configs that the chosen engine can't honour.
+    """Reject translation configs that cannot be honoured.
 
-    Engine policy:
-        Only the ``google`` engine supports non-English target languages.
-        Marian and NLLB are X→English only.
-
-    Raises:
-        ConfigError: When the user wants a non-English target with an
-                     engine other than ``google``.
-
-    No-ops when ``config.translate`` is False or when the target is
-    English.
+    Retained as the single place engine/target compatibility is checked, and
+    called before any expensive work runs. Since v1.2.5 the only translating
+    engine is Google GTX, which handles any target language, so the only
+    reachable failure is an engine that no longer exists — surfaced here
+    rather than after the audio extract and model load.
     """
-    from gensrt.exceptions import ConfigError
     if not config.translate:
         return
-    if config.target_language.lower() == "en":
+    if config.translation_engine.lower() == "none":
         return
-    if config.translation_engine.lower() == "google":
-        return
-    raise ConfigError(
-        f"Target language {config.target_language!r} is only supported by the "
-        f"'google' translation engine.  Current engine: "
-        f"{config.translation_engine!r}.  Switch the engine to Google, set "
-        f"the target language to English, or disable translation."
-    )
+
+    # Resolving the engine validates the key; get_engine raises ConfigError
+    # with an actionable message for removed or unknown engines.
+    from gensrt.translation.factory import get_engine
+
+    get_engine(config.translation_engine)
 
 
 def run_pipeline(
@@ -128,12 +121,34 @@ def run_pipeline(
             status("Transcribing…")
         progress(1, PIPELINE_PHASES)
 
+        # Resolve the chunk-diagnostics directory here, where the source
+        # filename is known. The engine only sees the temp extracted audio.
+        asr_config = config
+        if config.debug_chunk_dir:
+            asr_config = replace(
+                config,
+                debug_chunk_dir=str(Path(config.debug_chunk_dir) / input_path.stem),
+            )
+
         srt_segments, detected_language = _run_asr(
             wav_path=wav_path,
-            config=config,
+            config=asr_config,
+            status=status,
         )
 
         logger.info("Using language: %s", detected_language)
+
+        # Diagnostics dump, deliberately placed here: after ASR so the
+        # decoder metrics are present, before translation so the text is the
+        # model's own, and before build_srt so the timings are the model's own
+        # too.  Any later and two of those three are gone.
+        if config.dump_segments_dir:
+            from gensrt.segment_dump import write_segment_dump
+
+            write_segment_dump(
+                srt_segments,
+                Path(config.dump_segments_dir) / f"{input_path.stem}.segments.csv",
+            )
 
         # ── Phase 3: Translation ──────────────────────────────────────────
         # Normalize "english" → "en" so faster-whisper's occasional name-form
@@ -164,8 +179,31 @@ def run_pipeline(
         status("Writing SRT…")
         progress(3, PIPELINE_PHASES)
 
-        from gensrt.srt.builder import build_srt, write_srt, write_vtt
-        subtitles = build_srt(srt_segments, max_duration_s=config.max_subtitle_duration_s, min_duration_s=config.min_subtitle_duration_s)
+        from gensrt.srt.builder import (
+            build_srt,
+            summarize_segment_durations,
+            write_srt,
+            write_vtt,
+        )
+
+        # Log the model's OWN duration distribution before any capping,
+        # flooring, or overlap clamping touches it.  Once build_srt has run,
+        # the true sub-floor durations are gone — so if it is not recorded
+        # here it cannot be recovered from the output.  Cheap, and it makes
+        # every run self-documenting for investigation purposes.
+        if logger.isEnabledFor(logging.INFO):
+            logger.info(
+                "Raw ASR cue durations (pre-post-processing): %s",
+                summarize_segment_durations(srt_segments),
+            )
+
+        subtitles = build_srt(
+            srt_segments,
+            max_duration_s=config.max_subtitle_duration_s,
+            min_duration_s=config.min_subtitle_duration_s,
+            max_line_chars=config.max_line_chars,
+            max_lines=config.max_lines,
+        )
         write_srt(subtitles, output_path)
 
         # WebVTT companion — same cues, lands next to the SRT (movie.srt
@@ -210,18 +248,22 @@ def run_pipeline(
 def _run_asr(
     wav_path: Path,
     config: TranscriptionConfig,
+    status: StatusCallback | None = None,
 ) -> tuple[list[SRTSegment], str]:
     """Dispatch the ASR stage through the engine factory.
 
     Returns ``(segments, detected_language)`` — the engine produces
     :class:`SRTSegment` objects directly, so no further conversion is
     needed before translation.
+
+    *status* is forwarded to the engine so it can surface mid-run events the
+    user must see — chiefly a GPU-to-CPU fallback at model load.
     """
     from gensrt.asr import get_engine_for_model
 
     engine = get_engine_for_model(config.model)
     logger.info("ASR engine: %s (model=%s)", engine.name, config.model)
-    return engine.transcribe(wav_path, config)
+    return engine.transcribe(wav_path, config, status=status)
 
 
 def _maybe_translate(
@@ -263,6 +305,9 @@ def _maybe_translate(
         translated_texts = texts
 
     return [
-        SRTSegment(index=seg.index, start=seg.start, end=seg.end, text=tr)
+        # replace() rather than a fresh SRTSegment: translation changes only
+        # the text, and rebuilding by hand silently dropped every diagnostic
+        # field the engines had just populated.
+        replace(seg, text=tr)
         for seg, tr in zip(segments, translated_texts)
     ]

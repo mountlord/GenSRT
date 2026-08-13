@@ -34,7 +34,15 @@ GenSRT generates SRT subtitle files from video using GPU-accelerated speech reco
   </sub>
 </p>
 
-## What's new in v1.2
+## What's new in v1.2.5
+
+**Two installers.** A CPU-only build alongside the CUDA one. GenSRT no longer bundles PyTorch — transcription runs on CTranslate2 end to end, and PyTorch was only ever there to answer "is a GPU present?", which CTranslate2 answers itself. The CPU build carries no GPU libraries at all. If bandwidth is expensive where you are, that is the point.
+
+**Translate to any language.** `--target-language` now exists on the command line, and translation to non-English targets actually works — a batching bug meant the delimiter GenSRT used to separate cues was itself being translated.
+
+**Acknowledgments.** GUI clipping at 125–150% display scaling reported by [@moob158](https://github.com/mountlord/GenSRT/issues/1) — fixed.
+
+### Chunked inference (v1.2)
 
 **Chunked inference for fine-tuned Whisper models.** Community fine-tunes like SMC's `vegam-whisper-medium-ml` (for Malayalam) were practically unusable on long-form audio — they would transcribe the first 6-8 seconds and silently drop the rest. v1.2 solves this with silent-boundary chunked inference: audio is sliced along naturally-detected pauses, each chunk is transcribed independently, and the results are assembled into a single SRT with original timestamps preserved.
 
@@ -44,7 +52,14 @@ See the [v1.2 release notes](https://github.com/mountlord/GenSRT/releases/tag/v1
 
 ## Quick start
 
-1. Download `gensrt-install.exe` from the [latest release](https://github.com/mountlord/GenSRT/releases) and run it. It's a 7z self-extracting installer — pick a folder, and it'll unpack GenSRT there.
+1. Download the installer from the [latest release](https://github.com/mountlord/GenSRT/releases) and run it. It's a 7z self-extracting installer — pick a folder, and it'll unpack GenSRT there.
+
+   | Download | For | Size |
+   |---|---|---|
+   | `gensrt-install.exe` | NVIDIA GPU machines | 1,540 MB |
+   | `gensrt-install-cpu.exe` | everything else — Intel/AMD, integrated graphics, older laptops | 120 MB |
+
+   If you're unsure, or you're on a metered or slow connection, take the CPU build. It runs everywhere; it's just slower. You can always add the CUDA build later.
 2. Run `gensrt.exe` from the install folder. The GUI opens.
 3. Drop a video file onto the player. The Model selector in the footer defaults to `large-v3-turbo` (works well for English and most European languages).
 4. Click **Generate SRT**. The model auto-downloads on first use (~1-2 GB depending on the model), then transcription begins.
@@ -52,9 +67,26 @@ See the [v1.2 release notes](https://github.com/mountlord/GenSRT/releases/tag/v1
 
 > **First-run note:** the first time you generate an SRT with a given model, the model auto-downloads to your HuggingFace cache (~1-2 GB). The download is one-time. On CPU-only machines, transcription itself runs to completion but takes substantially longer than on a CUDA GPU — see [Requirements](#requirements) for typical timings.
 
-**For Malayalam:** select `smcproject/vegam-whisper-medium-ml-int8_float16` from the Model dropdown. v1.2's chunked inference runs automatically.
+**For Malayalam:** select `adalat-ai/ct2-whisper-medium-ml-rmft` from the Model dropdown. In our testing it was more accurate than the alternatives and roughly 3× faster — see [Malayalam models](#malayalam-models) below. `smcproject/vegam-whisper-medium-ml-int8_float16` also works well. Chunked inference runs automatically for both.
 
 **For other Indic or less-common languages:** start with `large-v3-turbo`. If results are poor, search HuggingFace for community fine-tunes and add the repo path via **New…** in the Model dropdown.
+
+## Malayalam models
+
+Two community fine-tunes work well, and they trade off differently. Both are medium-sized Whisper fine-tunes, both use GenSRT's chunked inference automatically.
+
+| | `adalat-ai/ct2-whisper-medium-ml-rmft` | `smcproject/vegam-whisper-medium-ml-int8_float16` |
+|---|---|---|
+| Accuracy | better in our testing | good |
+| Speed | **~3× faster** | slower |
+| Repeat runs | near-identical | text varies between runs |
+| Short spurious cues | ~40% of cues | ~10% of cues |
+
+We recommend **R-MFT** (the Adalat AI model). On a blind comparison — the listener didn't know which output came from which model — it was better on both detection and accuracy on a 4.5-minute Asianet news clip.
+
+The trade-off is real but one-sided: R-MFT emits about four times as many very short spurious cues (median 60 milliseconds — too brief to read during playback, but present in the SRT). vegam emits fewer of those, but its mistakes sit *inside* full-length cues, including occasional repetition loops, which no post-processing can remove without removing real speech.
+
+**Caveat on the comparison.** One clip, one native-speaker listener, six adjudicated differences. Enough to inform a recommendation; not a benchmark. Both models are actively maintained and your audio may differ from ours. The methodology and full measurements are in [INVESTIGATIONS.md](docs/INVESTIGATIONS.md) (entries I-7 and I-9).
 
 ## Requirements
 
@@ -63,19 +95,36 @@ See the [v1.2 release notes](https://github.com/mountlord/GenSRT/releases/tag/v1
 - **Also works on CPU** (Intel/AMD, including integrated graphics like Intel Arc) — GenSRT falls back automatically when no CUDA GPU is detected
 - Internet connection for first-run model download
 
+### Download size
+
+GenSRT does not bundle PyTorch. Transcription runs on CTranslate2 end to end, and PyTorch was only ever there to answer one question — "is a GPU present?" — which CTranslate2 answers itself, more accurately and for free.
+
+The practical effect is that the CPU-only build carries no GPU libraries at all, and the CUDA build carries only the two NVIDIA libraries CTranslate2 actually uses. If you're somewhere bandwidth is expensive, that difference is the point of shipping two builds.
+
+Forcing CPU mode on a machine that has a GPU is a supported configuration — set `"device": "cpu"` in `gensrt-config.json`, or pick **cpu** in the Config panel. That's also the workaround if your CUDA install is broken: GenSRT will fall back to CPU on its own with a warning, but setting it explicitly skips the failed attempt.
+
 ### A note on speed
 
-GPU vs. CPU is a substantial difference for Whisper-class models — observed timings on a 4.5-minute Malayalam news clip using `smcproject/vegam-whisper-medium-ml-int8_float16`:
+Model choice matters as much as hardware. On the same machine, same clip and same chunk plan, `adalat-ai/ct2-whisper-medium-ml-rmft` completed in 162s where `smcproject/vegam-whisper-medium-ml-int8_float16` took 515s — not because it decodes faster per chunk, but because it avoids a decoder-retry path the other model triggers on about a third of chunks.
 
-| Hardware | Time to transcribe |
-|---|---|
-| NVIDIA RTX 3060 Ti (CUDA) | ~7-8 minutes |
-| Intel Arc 140V iGPU (CPU mode, no CUDA) | ~24 minutes |
+GPU vs. CPU is also a substantial difference. Measured on the same 4.5-minute Malayalam news clip with `adalat-ai/ct2-whisper-medium-ml-rmft`:
 
-CPU mode runs to completion and produces comparable output quality — it just takes longer. If your machine doesn't have an NVIDIA GPU, GenSRT will still work; plan for the wait.
+| Hardware | Compute | Time | vs. clip length |
+|---|---|---|---|
+| RTX 3060M 6GB PCIe | float16 | **2.7 min** | 0.6× |
+| AMD Ryzen 5 PRO 4650GE, 6-core (CPU) | int8 | **41 min** | **9×** |
+
+**Plan for roughly nine times the length of your audio on CPU.** A 5-minute clip takes about 45 minutes; a 45-minute episode takes most of a working day. That is workable for short clips or an overnight batch, and painful if you were expecting minutes.
+
+Two notes on that number. It came from a competent 6-core desktop CPU, so a 4-core laptop will be slower — treat 9× as a floor rather than an average. And CPU timings drift with thermals: two identical runs on the same machine differed by 7%, the second being slower because the machine was already warm.
+
+Output quality is comparable. int8 and float16 produce the same cue structure and near-identical text, with occasional small wording differences in passages where the model is least confident. int8 on CPU is also fully deterministic — repeated runs produce byte-identical output, which float16 on GPU does not quite manage.
+
+If your machine has 8 GB of RAM, prefer medium-sized models. A medium model in int8 leaves little headroom once Python, Flask and the browser view are loaded, and a larger one may push the machine into swapping — which on a run already measured in tens of minutes is worth avoiding.
 
 ## Features
 
+- **Translate to any language** — `--target-language ko` (or `ja`, `hi`, `fr`…), or pick a target in the Config panel. Uses Google Translate; needs a network connection.
 - **Plug-in any HuggingFace Whisper model** — add custom faster-whisper-compatible models via the GUI's Model selector or the `--model` CLI argument.
 - **WebVTT alongside SRT** — every generation writes both `.srt` and `.vtt` so the output works in HTML5 `<video>` elements natively.
 - **Live in-player subtitle display** while editing — Split, Merge, Delete, and text edits show in the player immediately.
@@ -93,7 +142,9 @@ CPU mode runs to completion and produces comparable output quality — it just t
 
 ## Known limitations
 
-- Fine-tuned Whisper models like vegam occasionally emit a phrase from earlier in the audio at chunk tails. Visible as substring overlap with the previous cue. A cleanup post-processor is candidate work for v1.3.
+- Fine-tuned Whisper models emit very short spurious cues at chunk boundaries — typically a word the model has just transcribed, re-emitted with a near-zero timestamp span (median 60 ms). They are too brief to read during playback but appear in the SRT and matter when editing or translating. Rate is ~40% of cues for R-MFT and ~10% for vegam. Every one we have checked against audio was spurious. A one-click cleanup is candidate work for v1.3; until then they are straightforward to delete in the editor. Fully characterised in [INVESTIGATIONS.md](docs/INVESTIGATIONS.md) I-7.
+- **A monolingual fine-tune transcribes only its training language.** Passages in another language are not skipped — they are rendered phonetically into the training language, so English commentary in a Malayalam broadcast comes out as plausible-looking but meaningless Malayalam text. Nothing currently flags this. These are full-length cues, so no duration filter removes them; a native speaker reading the output will spot them immediately, and a non-speaker will not.
+- Cue boundaries *within* a chunk are Whisper's own, and it will occasionally split mid-word. GenSRT's chunk boundaries themselves are cut at detected silence and have been verified by ear not to slice words.
 - Whisper's tokenizer can stop generating mid-character on Indic scripts; a `�` at the end of a subtitle line is GenSRT signaling this honestly rather than masking it. The text *before* the `�` is accurate.
 - Built-in Whisper models struggle with fast, dense speech in Indian languages (news broadcasts with English code-switching). Use a fine-tuned model where available; verify against audio before publishing where one isn't.
 

@@ -237,7 +237,13 @@ async function loadSrtFromPath(srtPath, options = {}) {
         ? (videoPathInput.value || '').trim()
         : '');
       if (data.sibling_video !== currentVideo) {
-        window.tilesterSetVideoFromPath(data.sibling_video);
+        // skipSidecar: the user chose THIS SRT explicitly (drag/drop or
+        // Open).  Loading its sibling video must not then trigger sidecar
+        // discovery, which tries <basename>.srt first and would silently
+        // replace the file the user just asked for.  Dropping
+        // MalayalamNews-2.ml.srt loaded the video and then swapped in
+        // MalayalamNews-2.srt.
+        window.tilesterSetVideoFromPath(data.sibling_video, { skipSidecar: true });
       }
     }
     return true;
@@ -368,11 +374,15 @@ function loadJSON(file) {
 (function installSidecarHook() {
   const orig = window.tilesterSetVideoFromPath;
   if (typeof orig !== 'function') return;
-  window.tilesterSetVideoFromPath = function (fullPath) {
+  // Second parameter is ours; player.js only ever passes the path, and an
+  // unrecognised value degrades to "run discovery", which is the old
+  // behaviour and the safe default.
+  window.tilesterSetVideoFromPath = function (fullPath, opts) {
     const r = orig.call(this, fullPath);
+    const skipSidecar = !!(opts && opts.skipSidecar);
     try {
       const p = String(fullPath || '');
-      if (p) {
+      if (p && !skipSidecar) {
         // Delegate sidecar discovery to the server.  /api/srt?video=...
         // tries <basename>.srt first, then any <basename>.*.srt, so the
         // user sees the canonical track when present and a language

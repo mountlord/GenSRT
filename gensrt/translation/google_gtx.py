@@ -62,11 +62,29 @@ _MYMEMORY_URL = "https://api.mymemory.translated.net/get"
 #     4-byte UTF-8:  ~450 chars/batch  (emoji-heavy)
 _BATCH_URL_BUDGET = 5500
 _BATCH_MAX_ITEMS = 40
-_GLUE = "\n{{SPLIT}}\n"
-_GLUE_RE = re.compile(r"\s*\{\{SPLIT\}\}\s*", re.IGNORECASE)
+# Batch delimiter.
+#
+# This used to be "{{SPLIT}}", which worked only because the target was always
+# English: SPLIT is an English word, so Google left it alone. Translating
+# Malayalam to Korean turned every delimiter into {{분할}}, the split found one
+# part instead of eighteen, and 93% of cues came back untranslated.
+#
+# The marker is now purely non-alphabetic, so there is no word for a
+# translator to translate. The regex tolerates whitespace changes and a
+# varying run length, because MT engines do reflow punctuation.
+#
+# Even so, no marker can be *guaranteed* to survive an opaque translation
+# service — so the mismatch path below falls back to per-item translation
+# rather than trusting the marker.
+_GLUE = "\n@@@\n"
+_GLUE_RE = re.compile(r"\s*@{2,}\s*")
 # Pre-computed at module load — the glue is constant ASCII + control chars,
 # so its URL-encoded byte count never changes.
 _GLUE_URL_BYTES = len(quote(_GLUE, safe=""))
+
+# Pause between requests on the per-cue path. Small enough to be invisible on
+# a 100-cue file (~5s total), large enough not to look like a burst.
+_PER_ITEM_DELAY_S = 0.05
 
 _MAX_RETRIES = 3
 _RETRY_BASE_S = 0.25
@@ -75,6 +93,12 @@ _TIMEOUT_S = 15.0
 
 class GoogleGTXEngine(TranslationEngine):
     """Translation via the unofficial Google Translate GTX endpoint."""
+
+    #: Set when a batch delimiter fails to survive translation. Once that
+    #: happens for a given target language it will happen for every batch, so
+    #: the remaining batches go straight to the per-cue path instead of
+    #: wasting a failed request each.
+    _glue_disabled: bool = False
 
     def is_available(self) -> bool:
         return True   # pure HTTP — no package deps beyond requests
@@ -103,13 +127,20 @@ class GoogleGTXEngine(TranslationEngine):
         if not texts:
             return []
 
+        # Reset per call: whether glue survives depends on the target
+        # language, and a single engine instance may be reused across files.
+        self._glue_disabled = False
+
         src = source_language if source_language not in ("auto", "") else "auto"
         tgt = target_language or "en"
         results: list[str] = [""] * len(texts)
 
         for chunk_indices, chunk_texts in _make_chunks(texts):
             try:
-                translated = self._gtx_glue_batch(chunk_texts, src, tgt)
+                if self._glue_disabled:
+                    translated = self._translate_each(chunk_texts, src, tgt)
+                else:
+                    translated = self._gtx_glue_batch(chunk_texts, src, tgt)
             except Exception as exc:
                 logger.warning(
                     "[google-gtx] Batch failed (%s) — falling back to MyMemory.", exc
@@ -144,16 +175,47 @@ class GoogleGTXEngine(TranslationEngine):
         parts = _GLUE_RE.split(full)
 
         if len(parts) != len(texts):
+            # The delimiter did not survive. Padding the tail with originals
+            # (what this did before v1.2.5) is the worst option available: it
+            # silently emits untranslated text, and when the service merges
+            # everything into one blob it leaves ~95% of cues untranslated
+            # behind a single log line no GUI user sees. Worse, a *partial*
+            # split shifts every later cue onto the wrong translation, which
+            # looks plausible and is harder to notice than no translation.
+            #
+            # Translate the batch one cue at a time instead: slower, correct.
             logger.warning(
-                "[google-gtx] Glue split mismatch: expected %d, got %d — "
-                "padding with originals.",
-                len(texts), len(parts),
+                "[google-gtx] Batch delimiter did not survive translation to "
+                "%r (expected %d parts, got %d). Falling back to per-cue "
+                "translation for the rest of this job — slower, but correct.",
+                tgt, len(texts), len(parts),
             )
-            while len(parts) < len(texts):
-                parts.append(texts[len(parts)])
-            parts = parts[: len(texts)]
+            self._glue_disabled = True
+            return self._translate_each(texts, src, tgt)
 
         return parts
+
+    def _translate_each(self, texts: list[str], src: str, tgt: str) -> list[str]:
+        """Translate one cue per request.
+
+        The correct-but-slow path, used when batching cannot be trusted. A
+        short pause between requests keeps a 100-cue file from looking like a
+        burst to the endpoint; the retry/back-off in _fetch_gtx handles the
+        rate limiting that still gets through.
+        """
+        out: list[str] = []
+        for i, text in enumerate(texts):
+            if i:
+                time.sleep(_PER_ITEM_DELAY_S)
+            try:
+                out.append(self._gtx_single(text, src, tgt))
+            except Exception as exc:
+                logger.warning(
+                    "[google-gtx] Per-cue translation failed (%s) — "
+                    "keeping the original for this cue.", exc
+                )
+                out.append(text)
+        return out
 
     def _gtx_single(self, text: str, src: str, tgt: str = "en") -> str:
         """Single-text GTX request."""

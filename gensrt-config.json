@@ -4,8 +4,8 @@
   "recurse": false,
   "log_level": "INFO",
   "model": "large-v3-turbo",
-  "device": "cuda",
-  "compute_type": "float16",
+  "device": "auto",
+  "compute_type": "auto",
   "gpu_id": 0,
   "source_language": "auto",
   "vad_enabled": true,
@@ -18,5 +18,7 @@
   "translation_engine": "google",
   "translate": true,
   "backend": "cuda",
-  "target_language": "en"
+  "target_language": "en",
+  "max_line_chars": 42,
+  "max_lines": 2
 }

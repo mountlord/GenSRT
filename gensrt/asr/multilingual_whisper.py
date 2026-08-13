@@ -18,6 +18,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+from gensrt.asr._model_loader import load_whisper_model
 from gensrt.asr.base import ASREngine
 from gensrt.exceptions import TranscriptionError
 from gensrt.models import SRTSegment, TranscriptionConfig
@@ -38,6 +39,8 @@ class MultilingualWhisperEngine(ASREngine):
         self,
         wav_path: Path,
         config: TranscriptionConfig,
+        *,
+        status=None,
     ) -> tuple[list[SRTSegment], str]:
         try:
             from faster_whisper import WhisperModel
@@ -47,7 +50,7 @@ class MultilingualWhisperEngine(ASREngine):
                 "faster-whisper is not installed. Run: pip install faster-whisper",
             ) from exc
 
-        model = self._load_model(wav_path, config, WhisperModel)
+        model = load_whisper_model(wav_path, config, WhisperModel, status=status)
 
         transcribe_kwargs = self._build_transcribe_kwargs(config)
         self._log_vad_config(config)
@@ -74,50 +77,6 @@ class MultilingualWhisperEngine(ASREngine):
     # ─────────────────────────────────────────────────────────────────────
     # Internal helpers
     # ─────────────────────────────────────────────────────────────────────
-
-    @staticmethod
-    def _load_model(
-        wav_path: Path,
-        config: TranscriptionConfig,
-        WhisperModel,  # noqa: N803 — capitalised to mirror upstream class
-    ):
-        """Load the Whisper model with compute-type fallbacks.
-
-        Some GPUs / CTranslate2 builds reject ``float16`` and require
-        falling back to ``int8_float16`` or ``int8``.  We try the user's
-        requested type first, then graceful fallbacks.
-        """
-        compute_type = config.compute_type
-        fallbacks: list[str] = [compute_type]
-        if compute_type == "float16":
-            fallbacks += ["int8_float16", "int8"]
-        elif compute_type == "int8_float16":
-            fallbacks += ["int8"]
-
-        logger.info(
-            "Loading Whisper model: %s  (device=%s, compute=%s)",
-            config.model, config.device, compute_type,
-        )
-
-        last_exc: Exception | None = None
-        for ct in fallbacks:
-            try:
-                model = WhisperModel(config.model, device=config.device, compute_type=ct)
-                if ct != compute_type:
-                    logger.warning(
-                        "compute_type=%r unsupported — fell back to %r.",
-                        compute_type, ct,
-                    )
-                return model
-            except Exception as exc:
-                last_exc = exc
-                logger.debug(
-                    "WhisperModel load failed with compute_type=%r: %s", ct, exc
-                )
-
-        raise TranscriptionError(
-            str(wav_path), f"Failed to load Whisper model: {last_exc}"
-        ) from last_exc
 
     @staticmethod
     def _build_transcribe_kwargs(config: TranscriptionConfig) -> dict:

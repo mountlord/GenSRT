@@ -9,7 +9,7 @@ Usage examples::
     # Headless batch transcription
     gensrt --input video.mkv
     gensrt --input /media/shows/ --recurse
-    gensrt --input video.mkv --output /subs/ --translation-engine nllb
+    gensrt --input video.mkv --source-language ml --target-language ko
 
     # Configuration helpers
     gensrt --init-config      # write default gensrt-config.json and exit
@@ -26,6 +26,7 @@ import time
 from pathlib import Path
 
 from gensrt import __version__
+from gensrt.models import TranscriptionConfig
 
 logger = logging.getLogger(__name__)
 
@@ -48,9 +49,10 @@ def _build_parser() -> argparse.ArgumentParser:
             "  gensrt --input video.mkv                      # headless transcription\n"
             "  gensrt --input /shows/ --recurse              # batch, recurse dirs\n"
             "  gensrt --input ep01.mkv --no-translate        # keep source language\n"
-            "  gensrt --input ep01.mkv --translation-engine nllb  # offline engine\n"
+            "  gensrt --input ep01.mkv --target-language ko        # translate to Korean\n"
             "  gensrt --init-config                          # write default config\n"
             "  gensrt --dump-config                          # show resolved config\n"
+            "  gensrt --input ep01.mkv --debug-chunks ./diag  # export chunk audio + telemetry\n"
         ),
     )
 
@@ -133,9 +135,11 @@ def _build_parser() -> argparse.ArgumentParser:
     tr.add_argument(
         "--translation-engine",
         dest="translation_engine",
-        choices=["google", "nllb", "marian", "none"],
+        choices=["google", "none"],
         default=None,
-        help=f"Translation engine (default: {bd['translation_engine']!r}).",
+        help=f"Translation engine (default: {bd['translation_engine']!r}). "
+             "'google' translates to any target language and needs a network "
+             "connection; 'none' transcribes without translating.",
     )
     tr.add_argument(
         "--source-language",
@@ -145,6 +149,17 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             f"Source language code or 'auto' (default: {bd['source_language']!r}). "
             "Examples: ja, ko, ml, fr, auto."
+        ),
+    )
+    tr.add_argument(
+        "--target-language",
+        dest="target_language",
+        default=None,
+        metavar="LANG",
+        help=(
+            f"Target language code (default: {bd['target_language']!r}). "
+            "Examples: en, ko, ja, hi, fr. Translation is skipped when this "
+            "matches the detected source language."
         ),
     )
     tr.add_argument(
@@ -276,6 +291,44 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Alias for --log-level WARNING.",
     )
 
+    diag = parser.add_argument_group("diagnostics")
+    diag.add_argument(
+        "--dump-segments",
+        dest="dump_segments",
+        metavar="DIR",
+        default=None,
+        help="Write the raw ASR segment table to DIR/<name>.segments.csv — "
+             "one row per cue with the model's own timings, confidence and "
+             "chunk position, before any post-processing or translation. "
+             "Use this to evaluate cleanup rules against hand-labelled cues.",
+    )
+    diag.add_argument(
+        "--self-check",
+        action="store_true",
+        default=False,
+        help="Verify this installation is complete: import every module, run "
+             "the bundled ffmpeg, and load the CUDA libraries. Exits non-zero "
+             "on failure. Intended as a post-build check for packaged "
+             "distributions.",
+    )
+    diag.add_argument(
+        "--require-cuda",
+        action="store_true",
+        default=False,
+        help="With --self-check, treat CUDA problems as failures rather than "
+             "warnings. Use when building the CUDA distribution.",
+    )
+    diag.add_argument(
+        "--debug-chunks",
+        dest="debug_chunks",
+        metavar="DIR",
+        default=None,
+        help="Export each ASR chunk's audio plus a decode-telemetry manifest "
+             "(chunks.csv) to DIR/<audio-stem>/. Chunked engine only. Use this "
+             "to investigate why particular chunks decode slowly — the CSV "
+             "records temperature, compression ratio, and wall time per chunk.",
+    )
+
     parser.add_argument(
         "--version",
         action="version",
@@ -345,16 +398,24 @@ def _make_tqdm_progress():
         return _progress, []
 
 
-def _print_banner(merged: dict) -> None:
-    import sys
+def _print_banner(config: TranscriptionConfig) -> None:
+    """Print the run banner from the RESOLVED config.
+
+    Must be handed the TranscriptionConfig that came out of
+    build_transcription_config(), not the merged settings dict that went into
+    it.  The dict still holds the user's *request* — "auto" for device and
+    compute type — which tells the user nothing about what will actually run.
+    Worse, `backend` in the dict is whatever is stale in gensrt-config.json,
+    so a CPU-only machine could print "cuda" and be believed.
+    """
     print("", file=sys.stderr)
     print("═" * 60, file=sys.stderr)
     print("  GenSRT", file=sys.stderr)
-    print(f"  Model  : {merged.get('model')}", file=sys.stderr)
-    print(f"  Device : {merged.get('device')} ({merged.get('backend', 'auto')})", file=sys.stderr)
-    print(f"  Compute: {merged.get('compute_type')}", file=sys.stderr)
-    print(f"  Engine : {merged.get('translation_engine')}", file=sys.stderr)
-    print(f"  VAD    : {'on' if merged.get('vad_enabled') else 'off'}", file=sys.stderr)
+    print(f"  Model  : {config.model}", file=sys.stderr)
+    print(f"  Device : {config.device} ({config.backend})", file=sys.stderr)
+    print(f"  Compute: {config.compute_type}", file=sys.stderr)
+    print(f"  Engine : {config.translation_engine}", file=sys.stderr)
+    print(f"  VAD    : {'on' if config.vad_enabled else 'off'}", file=sys.stderr)
     print("═" * 60, file=sys.stderr)
     print("", file=sys.stderr)
 
@@ -387,7 +448,7 @@ def _run_headless(args: argparse.Namespace) -> int:
 
     # Build config (auto-detect GPU)
     config = build_transcription_config(merged, auto_detect_backend=True)
-    _print_banner(merged)
+    _print_banner(config)
 
     # Collect input files
     all_inputs: list[Path] = list(args.inputs or [])
@@ -498,6 +559,17 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(0)
 
     # ── --dump-config ──────────────────────────────────────────────────────
+    # argparse dest for --debug-chunks is debug_chunks; the config key is
+    # debug_chunk_dir.  Map it before merge so the config file can set it too.
+    if getattr(args, "debug_chunks", None):
+        args.debug_chunk_dir = args.debug_chunks
+    if getattr(args, "dump_segments", None):
+        args.dump_segments_dir = args.dump_segments
+
+    if getattr(args, "self_check", False):
+        from gensrt.selfcheck import run_self_check
+        return run_self_check(require_cuda=getattr(args, "require_cuda", False))
+
     if args.dump_config:
         from gensrt.exceptions import ConfigError, ConfigParseError
         try:

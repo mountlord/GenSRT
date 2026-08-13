@@ -1,16 +1,38 @@
-# GenSRT — CUDA-specific PyTorch build.
+# GenSRT — NVIDIA GPU acceleration libraries.
 #
-# Install BEFORE requirements.txt so pip resolves the GPU build of torch
-# instead of pulling the CPU wheel from PyPI:
-#
-#   pip install -r requirements-cuda.txt
 #   pip install -r requirements.txt
+#   pip install -r requirements-cuda.txt
 #   pip install -e .
 #
-# Targets NVIDIA GPUs with CUDA 12.8.  Note: PyTorch 2.12+ has deprecated
-# cu128 in favor of cu130, so a future torch bump will need to update the
-# index URL below.
+# These are the CUDA libraries CTranslate2 needs for GPU inference: cuBLAS
+# for the matrix maths and cuDNN 9 for the neural-network kernels.  They used
+# to arrive as a side effect of installing PyTorch's CUDA build, which is why
+# GenSRT depended on torch even though it never ran a torch model.  Pulling
+# them in directly is roughly a third of the download and gets the same
+# result.
+#
+# Order does not matter any more — there is no longer a CPU-vs-GPU torch
+# wheel to resolve, so the old "install this FIRST" caveat is gone.
+#
+# Requires an NVIDIA driver supporting CUDA 12 on the target machine.
+# CPU-only machines should simply skip this file; GenSRT detects the absence
+# and runs on CPU.
 
---index-url https://download.pytorch.org/whl/cu128
-torch==2.10.0
-torchaudio==2.10.0
+nvidia-cublas-cu12>=12.4
+nvidia-cudnn-cu12>=9.0,<10
+nvidia-cuda-runtime-cu12>=12.4
+
+# NVRTC arrives transitively as a dependency of nvidia-cublas-cu12 (cuBLAS
+# JIT-compiles some kernels through it), so pip installs it whether or not it
+# is listed here.  It is listed anyway, because Pack-gensrt.ps1 has to bundle
+# it explicitly: PyInstaller collects only what it is told to, and a
+# transitive dependency that nobody names is exactly the kind of thing that
+# works in a dev venv and is silently missing from the packaged installer.
+#
+# Wheel sizes, win_amd64, as resolved on 2026-08-03:
+#   nvidia-cudnn-cu12         737.1 MB
+#   nvidia-cublas-cu12        553.2 MB
+#   nvidia-cuda-nvrtc-cu12     76.4 MB
+#   nvidia-cuda-runtime-cu12    3.6 MB
+#                            ---------
+#                            ~1.37 GB   (vs. this plus torch previously)

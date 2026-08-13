@@ -32,6 +32,8 @@ class ASREngine(ABC):
         self,
         wav_path: Path,
         config: TranscriptionConfig,
+        *,
+        status=None,
     ) -> tuple[list[SRTSegment], str]:
         """Transcribe *wav_path* and return SRT segments + detected language.
 
@@ -41,6 +43,11 @@ class ASREngine(ABC):
             config:   Fully resolved :class:`TranscriptionConfig`.  The
                       engine reads model name, device, compute type, VAD
                       parameters, and source language from this object.
+            status:   Optional ``(str) -> None`` callback for human-readable
+                      progress messages.  Engines use it to surface events the
+                      user needs to know about mid-run — most importantly a
+                      GPU-to-CPU fallback, which changes a 7-minute job into a
+                      25-minute one and must not be log-only.
 
         Returns:
             Tuple of:

@@ -253,6 +253,25 @@
   }
   .mute-btn:hover { opacity: 1; }
 
+  /* Footer: wraps instead of scrolling.
+     ------------------------------------------------------------------
+     Through v1.2.1 this was `flex-wrap: nowrap` + `overflow-x: auto`, so
+     the footer never reflowed — it scrolled sideways.  The full control
+     row needs roughly 1650 CSS pixels; a maximised 1920x1080 panel at
+     Windows' 150% DPI scaling gives about 1280, so Burn SRT and
+     Fullscreen fell off the right edge.  WebView2 renders that
+     horizontal scrollbar as an auto-hiding overlay, so there was no
+     visible cue that anything was reachable at all.  (GitHub issue #1.)
+
+     125% is Windows' *recommended* setting for the ~141 PPI panel in a
+     15.6" 1080p laptop, so this is the factory-default configuration on
+     a very common machine, not a power-user edge case.
+
+     Wrapping was chosen over a media query because it needs no
+     breakpoints: breakpoints would have to be reasoned about in CSS
+     pixels across 100/125/150/175% scaling, and re-tuned whenever a
+     control is added to the footer.  Wrapping is correct at every width
+     by construction — the footer simply grows a row when it must. */
   .video-footer {
     padding: 12px 20px;
     border-top: 1px solid var(--border);
@@ -263,11 +282,30 @@
     display: flex;
     align-items: center;
     gap: 10px;
+    row-gap: 8px;
     flex-shrink: 0;
-    flex-wrap: nowrap;
+    flex-wrap: wrap;
     white-space: nowrap;
-    overflow-x: auto;
+    overflow-x: hidden;
     overflow-y: hidden;
+  }
+
+  /* Keep the paired input+button controls together across a wrap: without
+     this the "◀" button can land on the next row from its own field. */
+  .video-footer .goto-frame,
+  .video-footer .goto-time {
+    display: inline-flex;
+    align-items: center;
+    flex-shrink: 0;
+  }
+
+  /* The hints block is the elastic element that absorbs slack on a wide
+     window.  Once wrapping is in play it must be allowed to collapse, or
+     it holds the row wider than it needs to be and forces an early wrap. */
+  .video-footer .shortcut-hints {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
   }
 
   .video-footer span { opacity: 0.8; }
@@ -700,7 +738,15 @@
 
   .link-item {
     display: grid;
-    grid-template-columns: 30px 30px 30px 126px 1fr auto;
+    /* checkbox | edit | cue# | timecode | text
+       The trailing `auto` column held per-cue video frame numbers, inherited
+       from Tilester where cutting on frame boundaries mattered. SRT has no
+       concept of frames, burn-in is time-driven, and the fps came from a
+       player heuristic that often failed — so the column was useless when it
+       worked and blank when it didn't. Removed; its ~60px goes to the text,
+       which is the column that actually truncates. Clicking a row already
+       seeks to the exact position. */
+    grid-template-columns: 30px 30px 28px 126px 1fr;
     gap: 12px;
     align-items: center;
     padding: 10px 16px;
@@ -751,6 +797,19 @@
   .link-item .dot.seam-on { background: var(--seam-on); box-shadow: 0 0 6px rgba(249, 115, 22, 0.4); }
   .link-item .dot.seam-off { background: var(--seam-off); box-shadow: 0 0 6px rgba(34, 197, 94, 0.4); }
 
+  /* Cue number. 28px fits four digits at this size — a 10,000-cue file is
+     far beyond anything real, so reserving more would just be dead space.
+     Right-aligned with tabular figures so digits line up as the list scrolls,
+     and dimmed: it is a reference for cross-checking against the SRT or a
+     diagnostics CSV, not something to read while watching. */
+  .link-item .cue-num {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--text-dim);
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
+
   .link-item .time {
     font-family: var(--font-mono);
     font-size: 13px;
@@ -764,15 +823,6 @@
     color: var(--text-dim);
     overflow: hidden;
     text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .link-item .frame-tag {
-    font-family: var(--font-mono);
-    font-size: 11px;
-    color: var(--text-dim);
-    opacity: 0.95;
-    font-variant-numeric: tabular-nums;
     white-space: nowrap;
   }
 

@@ -149,6 +149,8 @@ venv.bak/
 SrtTest/
 GitShouldNotSee/
 *.bak
+source-videos/
+RELEASE-NOTES*
 
 # Bundled ffmpeg/ffprobe — copy these from a gyan.dev essentials build
 # into gensrt/bin/ before running Pack-gensrt.ps1.  Not tracked in git

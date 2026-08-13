@@ -38,6 +38,15 @@ from gensrt.asr._silence_chunking import (
     plan_chunks,
     summarize_chunk_plan,
 )
+from gensrt.asr._chunk_debug import (
+    ChunkRecord,
+    ChunkRecorder,
+    NullChunkRecorder,
+    log_timing_summary,
+)
+from dataclasses import replace
+
+from gensrt.asr._model_loader import is_environment_error, load_whisper_model
 from gensrt.asr.base import ASREngine
 from gensrt.exceptions import TranscriptionError
 from gensrt.models import SRTSegment, TranscriptionConfig
@@ -58,14 +67,12 @@ class MonolingualWhisperEngine(ASREngine):
         self,
         wav_path: Path,
         config: TranscriptionConfig,
+        *,
+        status=None,
     ) -> tuple[list[SRTSegment], str]:
-        try:
-            from faster_whisper import WhisperModel
-        except ImportError as exc:
-            raise TranscriptionError(
-                str(wav_path),
-                "faster-whisper is not installed. Run: pip install faster-whisper",
-            ) from exc
+        # Fail fast with a clear message if the dependency is absent, rather
+        # than after the audio load and chunk planning have already run.
+        _whisper_model_class(wav_path)
 
         # ── Step 1: Load audio into memory ───────────────────────────────
         # We need numpy access for VAD slicing and energy-min detection.
@@ -108,8 +115,6 @@ class MonolingualWhisperEngine(ASREngine):
         )
 
         # ── Step 4: Load model + per-chunk inference ─────────────────────
-        model = self._load_model(wav_path, config, WhisperModel)
-
         # Decide the language we'll pass to model.transcribe() per chunk.
         #
         # Priority:
@@ -141,8 +146,8 @@ class MonolingualWhisperEngine(ASREngine):
         else:
             source_lang = config.source_language
 
-        srt_segments, detected_language = self._transcribe_chunks(
-            model, audio, sr, chunks, source_lang, wav_path,
+        srt_segments, detected_language = self._transcribe_with_cpu_retry(
+            audio, sr, chunks, source_lang, wav_path, config, status
         )
 
         logger.info(
@@ -178,51 +183,68 @@ class MonolingualWhisperEngine(ASREngine):
         raw = get_speech_timestamps(audio, opts)
         return [(r["start"] / sr, r["end"] / sr) for r in raw]
 
-    @staticmethod
-    def _load_model(
+    def _transcribe_with_cpu_retry(
+        self,
+        audio,
+        sr: int,
+        chunks: list[dict],
+        source_lang: str | None,
         wav_path: Path,
-        config: TranscriptionConfig,
-        WhisperModel,  # noqa: N803
-    ):
-        """Load the Whisper model with compute-type fallbacks.
+        config,
+        status=None,
+    ) -> tuple[list[SRTSegment], str]:
+        """Load the model and run inference, falling back to CPU if the GPU fails.
 
-        Mirrors the loading logic in
-        :class:`gensrt.asr.multilingual_whisper.MultilingualWhisperEngine`
-        — kept duplicated rather than abstracted because the engines may
-        diverge in the future (e.g. monolingual could grow per-chunk
-        warm-up logic).
+        This is a *second* fallback layer, distinct from the one in
+        :func:`gensrt.asr._model_loader.load_whisper_model`, and it exists
+        because the two failures happen at different times.
+
+        CTranslate2 resolves cuBLAS and cuDNN lazily — at the first inference
+        call, not when the model is constructed.  So a machine with a working
+        NVIDIA driver but missing CUDA runtime libraries loads the model
+        happily and then fails on every chunk.  The load-time fallback cannot
+        see that; only this can.
+
+        Retrying the whole file on CPU is the right trade: the alternative is
+        failing a job that may be one of fifty in a batch.  The warning is
+        loud because on a packaged build this nearly always means the CUDA
+        libraries were not bundled properly, which is a bug to fix rather than
+        a condition to accept.
         """
-        compute_type = config.compute_type
-        fallbacks: list[str] = [compute_type]
-        if compute_type == "float16":
-            fallbacks += ["int8_float16", "int8"]
-        elif compute_type == "int8_float16":
-            fallbacks += ["int8"]
+        WhisperModel = _whisper_model_class(wav_path)
+        model = load_whisper_model(wav_path, config, WhisperModel, status=status)
 
-        logger.info(
-            "Loading Whisper model: %s  (device=%s, compute=%s)",
-            config.model, config.device, compute_type,
-        )
+        try:
+            return self._transcribe_chunks(
+                model, audio, sr, chunks, source_lang, wav_path,
+                config=config,
+                status=status,
+                debug_chunk_dir=getattr(config, "debug_chunk_dir", ""),
+            )
+        except TranscriptionError:
+            if getattr(config, "device", "cuda") == "cpu":
+                raise
 
-        last_exc: Exception | None = None
-        for ct in fallbacks:
-            try:
-                model = WhisperModel(config.model, device=config.device, compute_type=ct)
-                if ct != compute_type:
-                    logger.warning(
-                        "compute_type=%r unsupported — fell back to %r.",
-                        compute_type, ct,
-                    )
-                return model
-            except Exception as exc:
-                last_exc = exc
-                logger.debug(
-                    "WhisperModel load failed with compute_type=%r: %s", ct, exc
-                )
+            logger.warning(
+                "[%s] GPU inference failed — retrying the whole file on CPU. "
+                "This will be substantially slower. If you expected GPU "
+                "acceleration, the CUDA runtime libraries are missing or "
+                "unloadable; see the error above.",
+                self.name,
+            )
+            if callable(status):
+                status("GPU inference failed — retrying on CPU (much slower)…")
 
-        raise TranscriptionError(
-            str(wav_path), f"Failed to load Whisper model: {last_exc}"
-        ) from last_exc
+            cpu_config = replace(config, device="cpu", compute_type="int8")
+            model = load_whisper_model(
+                wav_path, cpu_config, WhisperModel, status=status
+            )
+            return self._transcribe_chunks(
+                model, audio, sr, chunks, source_lang, wav_path,
+                config=cpu_config,
+                status=status,
+                debug_chunk_dir=getattr(cpu_config, "debug_chunk_dir", ""),
+            )
 
     def _transcribe_chunks(
         self,
@@ -232,6 +254,9 @@ class MonolingualWhisperEngine(ASREngine):
         chunks: list[dict],
         source_lang: str | None,
         wav_path: Path,
+        config=None,
+        status=None,
+        debug_chunk_dir: str = "",
     ) -> tuple[list[SRTSegment], str]:
         """Run per-chunk inference and assemble segments.
 
@@ -245,12 +270,31 @@ class MonolingualWhisperEngine(ASREngine):
         what we validated.  Performance impact is negligible (~100ms per
         chunk for the WAV write).
         """
-        import numpy as np
         import tempfile
-        import wave
+        import time
 
         all_cues: list[tuple[float, float, str]] = []
         chunk_index_for_logging = 0
+
+        # Per-chunk decode telemetry.  Timing is collected unconditionally —
+        # it costs one perf_counter call per chunk and drives the outlier
+        # summary that runs on every job.  Audio export only happens when a
+        # debug directory was configured.
+        records: list[ChunkRecord] = []
+        if debug_chunk_dir:
+            # Use the directory verbatim. It used to be derived from
+            # wav_path.stem, but wav_path is the *temp* extracted audio
+            # (gensrt_audio_73g7xhsu.wav), so every run produced a fresh
+            # randomly-named folder with no way to tell which source video it
+            # came from. The caller knows the source name; the engine does not,
+            # so the caller now resolves the path.
+            recorder = ChunkRecorder(Path(debug_chunk_dir))
+            logger.info(
+                "[%s] Chunk diagnostics enabled → %s",
+                self.name, Path(debug_chunk_dir),
+            )
+        else:
+            recorder = NullChunkRecorder()
 
         # `effective_lang` is what we pass to model.transcribe() at each
         # chunk.  It starts as the caller-supplied source_lang — which may
@@ -264,6 +308,13 @@ class MonolingualWhisperEngine(ASREngine):
         # conditioning across chunks of the same audio.
         effective_lang: str | None = source_lang
         detected_language: str | None = source_lang  # for the return value
+
+        # Set when a chunk fails for an environment reason (missing CUDA
+        # library, exhausted GPU).  Such a failure will repeat identically on
+        # every remaining chunk, so we abandon the pass immediately rather
+        # than skipping 43 chunks in a row and returning an empty subtitle
+        # file — which is what GenSRT did before this guard existed.
+        env_failure: Exception | None = None
 
         # Single temp dir for all chunks of this job — auto-cleaned via with.
         with tempfile.TemporaryDirectory(prefix="gensrt_chunks_") as tmp_dir:
@@ -280,6 +331,12 @@ class MonolingualWhisperEngine(ASREngine):
                 chunk_wav = tmp_path / f"chunk_{chunk_index_for_logging:04d}.wav"
                 _write_chunk_wav(samples, sr, chunk_wav)
 
+                rec = ChunkRecord(chunk_index_for_logging, c_start, c_end)
+                records.append(rec)
+                # Time the decode only — not the WAV write, which is fixed
+                # overhead and would blur the signal we are looking for.
+                t0 = time.perf_counter()
+
                 try:
                     segments_gen, info = model.transcribe(
                         str(chunk_wav),
@@ -292,13 +349,31 @@ class MonolingualWhisperEngine(ASREngine):
                         vad_filter=False,
                     )
                     chunk_segments = list(segments_gen)
+                    rec.wall_s = time.perf_counter() - t0
+                    rec.observe_segments(chunk_segments)
+                    recorder.record(rec, chunk_wav)
                 except Exception as exc:
                     # One bad chunk shouldn't abort the whole transcription.
                     # Log it and skip — the user sees a small gap rather
                     # than a complete failure.
+                    rec.wall_s = time.perf_counter() - t0
+                    rec.failed = True
+
+                    if is_environment_error(exc):
+                        # Not a bad chunk — a broken environment.  Stop now;
+                        # the caller decides whether to retry on CPU or fail.
+                        env_failure = exc
+                        logger.error(
+                            "[%s] Chunk %d failed for an environment reason: %s",
+                            self.name, chunk_index_for_logging, exc,
+                        )
+                        break
+
                     logger.warning(
-                        "[%s] Chunk %d transcribe failed (%s) — skipping.",
+                        "[%s] Chunk %d transcribe failed (%s) — skipping. "
+                        "%.2fs of audio at %.1fs will have no subtitles.",
                         self.name, chunk_index_for_logging, exc,
+                        c_end - c_start, c_start,
                     )
                     continue
 
@@ -314,13 +389,51 @@ class MonolingualWhisperEngine(ASREngine):
                         self.name, effective_lang, len(chunks) - chunk_index_for_logging,
                     )
 
-                # Offset chunk-local timestamps by chunk start.
-                for seg in chunk_segments:
+                # Offset chunk-local timestamps by chunk start, and carry the
+                # decoder's own metrics plus this segment's position in the
+                # chunk forward.  Both are discarded at this boundary in a
+                # plain faster-whisper pipeline; keeping them is what makes
+                # confidence-based and chunk-tail-based analysis possible
+                # downstream (see SRTSegment).
+                kept = [seg for seg in chunk_segments if seg.text.strip()]
+                for position, seg in enumerate(kept, start=1):
                     abs_start = c_start + float(seg.start)
                     abs_end = min(c_start + float(seg.end), c_end)
-                    text = seg.text.strip()
-                    if text:
-                        all_cues.append((abs_start, abs_end, text))
+                    all_cues.append((
+                        abs_start,
+                        abs_end,
+                        seg.text.strip(),
+                        _segment_diagnostics(
+                            seg,
+                            chunk_index=chunk_index_for_logging,
+                            chunk_position=position,
+                            chunk_n_segments=len(kept),
+                        ),
+                    ))
+
+        if env_failure is not None:
+            raise _environment_failure_error(wav_path, env_failure, config)
+
+        log_timing_summary(records, self.name)
+        recorder.finalize(wav_path.name)
+
+        n_failed = sum(1 for r in records if r.failed)
+        if n_failed:
+            logger.warning(
+                "[%s] %d of %d chunk(s) failed to decode — that audio is absent "
+                "from the output.",
+                self.name, n_failed, len(records),
+            )
+            # Skipping the odd bad chunk is the intended resilience.  Losing
+            # most of the file is not: a subtitle file covering a third of the
+            # audio looks finished and is worse than an honest failure.
+            if n_failed * 2 > len(records):
+                raise TranscriptionError(
+                    str(wav_path),
+                    f"{n_failed} of {len(records)} chunks failed to decode. "
+                    f"Refusing to write a subtitle file that would be mostly "
+                    f"empty. Run with --log-level DEBUG for the per-chunk errors.",
+                )
 
         if not all_cues:
             return [], detected_language or "unknown"
@@ -330,8 +443,8 @@ class MonolingualWhisperEngine(ASREngine):
 
         # Assemble SRTSegments with monotonic 1-based indices.
         srt_segments = [
-            SRTSegment(index=i, start=start, end=end, text=text)
-            for i, (start, end, text) in enumerate(all_cues, start=1)
+            SRTSegment(index=i, start=start, end=end, text=text, **diag)
+            for i, (start, end, text, diag) in enumerate(all_cues, start=1)
         ]
         return srt_segments, detected_language or "unknown"
 
@@ -339,6 +452,92 @@ class MonolingualWhisperEngine(ASREngine):
 # ──────────────────────────────────────────────────────────────────────────
 # Module-private helpers
 # ──────────────────────────────────────────────────────────────────────────
+
+
+def _segment_diagnostics(
+    seg,
+    *,
+    chunk_index: int | None = None,
+    chunk_position: int | None = None,
+    chunk_n_segments: int | None = None,
+) -> dict:
+    """Extract decoder metrics from a faster-whisper Segment.
+
+    Every field is read with getattr and a None default.  These attributes
+    exist in faster-whisper 1.x but are not covered by any stability
+    guarantee, and ``temperature`` is Optional even when present — a future
+    release dropping one should leave the diagnostics blank, not fail a
+    transcription.
+    """
+    def _f(name):
+        value = getattr(seg, name, None)
+        return None if value is None else float(value)
+
+    return {
+        "avg_logprob": _f("avg_logprob"),
+        "compression_ratio": _f("compression_ratio"),
+        "no_speech_prob": _f("no_speech_prob"),
+        "temperature": _f("temperature"),
+        "chunk_index": chunk_index,
+        "chunk_position": chunk_position,
+        "chunk_n_segments": chunk_n_segments,
+    }
+
+
+def _whisper_model_class(wav_path):
+    """Import and return ``faster_whisper.WhisperModel``.
+
+    Kept as a function so faster-whisper stays out of the module import graph
+    (it pulls in CTranslate2, ONNX Runtime and tokenizers, which matters for
+    CLI startup time) and so tests can substitute it.
+    """
+    try:
+        from faster_whisper import WhisperModel
+    except ImportError as exc:
+        raise TranscriptionError(
+            str(wav_path),
+            "faster-whisper is not installed. Run: pip install faster-whisper",
+        ) from exc
+    return WhisperModel
+
+
+def _environment_failure_error(wav_path, exc, config) -> TranscriptionError:
+    """Turn a CUDA/library failure into an error a user can act on.
+
+    A bare "Library cublas64_12.dll is not found or cannot be loaded" tells
+    someone who did not build this nothing at all.  It is worth spending a few
+    lines to say what is missing and what to do about it, because this
+    particular failure has an easy fix and an easy workaround.
+    """
+    device = getattr(config, "device", "cuda") if config else "cuda"
+    text = str(exc)
+
+    if device == "cpu":
+        return TranscriptionError(
+            str(wav_path),
+            f"Inference failed on CPU: {text}",
+        )
+
+    from gensrt._cuda_dlls import find_cuda_libraries, registered_directories
+
+    missing = [name for name, path in find_cuda_libraries().items() if path is None]
+    dirs = registered_directories()
+
+    detail = f"GPU inference failed: {text}\n"
+    if missing:
+        detail += f"  Missing CUDA librar(ies): {', '.join(missing)}\n"
+    if dirs:
+        detail += f"  Searched {len(dirs)} registered CUDA director(ies).\n"
+    else:
+        detail += "  No CUDA library directories were registered.\n"
+    detail += (
+        "  This usually means the CUDA runtime libraries are not installed "
+        "alongside GenSRT.\n"
+        "  Workaround: set \"device\": \"cpu\" in gensrt-config.json (slower, "
+        "but works anywhere).\n"
+        "  From source: pip install -r requirements-cuda.txt"
+    )
+    return TranscriptionError(str(wav_path), detail)
 
 
 def _write_chunk_wav(samples, sr: int, out_path: Path) -> None:

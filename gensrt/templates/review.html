@@ -371,8 +371,14 @@
              autocomplete="off"
              spellcheck="false"
              style="width: 100%; background: var(--surface2); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 8px 10px; font-size: 13px; font-family: var(--font-mono);">
+      <!-- white-space: pre-line so multi-line guidance renders as written.
+           Error messages from /api/validate_model include numbered steps
+           (e.g. the certificate-verification failure), and HTML would
+           otherwise collapse them into one run-on paragraph. Set via
+           textContent in api.js, so this stays injection-safe. -->
       <div id="addModelStatus"
-           style="font-size: 12px; line-height: 1.5; margin-top: 10px; min-height: 18px;"></div>
+           style="font-size: 12px; line-height: 1.5; margin-top: 10px; min-height: 18px;
+                  white-space: pre-line; max-height: 40vh; overflow-y: auto;"></div>
     </div>
     <div class="modal-footer">
       <button class="modal-btn cancel" id="addModelCancel">Cancel</button>

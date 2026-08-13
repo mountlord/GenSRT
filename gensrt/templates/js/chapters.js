@@ -120,9 +120,6 @@ function renderLinks(data) {
     item.dataset.kind  = 'chapter';
     item.dataset.index = i;
 
-    const startFrameTag = fmtFrameTag(frameAtTime(chaptersArr[i].start_time));
-    const endFrameTag   = fmtFrameTag(frameAtTime(chaptersArr[i].end_time));
-
     const checkbox        = document.createElement('input');
     checkbox.type         = 'checkbox';
     checkbox.className    = 'chapter-checkbox';
@@ -141,9 +138,9 @@ function renderLinks(data) {
     const rowDiv = document.createElement('div');
     rowDiv.style.display = 'contents';
     rowDiv.innerHTML = `
+      <div class="cue-num">${i + 1}</div>
       <div class="time">${fmtTime(chaptersArr[i].start_time)} - ${fmtTime(chaptersArr[i].end_time)}</div>
       <div class="label">${_escapeHtml(ch.text || ch.title || ('Line ' + (i + 1)))} <span style="opacity:0.6">(${fmtDuration(chaptersArr[i].end_time - chaptersArr[i].start_time)})</span></div>
-      <div class="frame-tag">${startFrameTag} - ${endFrameTag}</div>
     `;
 
     item.appendChild(checkbox);

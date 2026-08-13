@@ -68,8 +68,6 @@ updateButtonStates();
 
 const ENGINE_LABELS = {
   google:      'Google (GTX)',
-  nllb:        'NLLB-200 (offline)',
-  marian:      'MarianMT (offline)',
   passthrough: 'None (skip translation)',
   none:        'None (skip translation)',
 };
