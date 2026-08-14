@@ -79,7 +79,7 @@ def _find_config_file() -> Path | None:
     candidates = [
         Path(sys.argv[0]).resolve().parent / DEFAULT_CONFIG_NAME,
         Path.cwd() / DEFAULT_CONFIG_NAME,
-    ]
+    ]  # both searched; creation is handled by model_paths.sidecar_dir()
     for p in candidates:
         if p.is_file():
             logger.debug("Auto-discovered config: %s", p)
@@ -149,7 +149,12 @@ def generate_default_config(path: Path | None = None) -> Path:
         The path that was written.
     """
     if path is None:
-        path = Path.cwd() / DEFAULT_CONFIG_NAME
+        # Next to the executable rather than the working directory: a config
+        # written to wherever the user happened to run from is a config they
+        # will not find again. See model_paths.sidecar_dir().
+        from gensrt.model_paths import sidecar_dir
+
+        path = sidecar_dir() / DEFAULT_CONFIG_NAME
 
     path = Path(path)
     path.write_text(json.dumps(BUILTIN_DEFAULTS, indent=2) + "\n", encoding="utf-8")

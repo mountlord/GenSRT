@@ -1,5 +1,25 @@
 # Changelog
 
+## v1.2.6 — 2026-08-14
+
+### Added
+- `models\` directory beside the executable for locally-converted CTranslate2 models; a bare folder name resolves against it.
+- Conversion guidance now prints a ready-to-run `ct2-transformers-converter` command with the real output path filled in.
+- Error messages are selectable and have a copy button.
+- Patch distribution for CUDA installs (`Create-gensrt-patch.ps1`, `tools/make_patch.py`), so an update is ~13 MB rather than a full re-download.
+
+### Changed
+- Model validation reports HuggingFace 401 responses accurately: private, gated and nonexistent repositories are indistinguishable from outside, and GenSRT no longer claims otherwise.
+- Certificate-verification failures explain the likely cause and what to try.
+- A misconfigured `REQUESTS_CA_BUNDLE` / `CURL_CA_BUNDLE` / `SSL_CERT_FILE` is named explicitly, with the offending values.
+- `gensrt-config.json` and `gensrt-known-models.json` are created beside the executable rather than in the working directory. Existing files are not moved.
+
+### Fixed
+- Text selection was disabled at the pywebview window level (`text_select=False`), below anything CSS could override.
+- Local models were only searched for beside the executable, so a model in a project folder was invisible when running from source.
+- Multi-line messages collapsed into a single paragraph.
+
+
 ## v1.2.5 — 2026-08-12
 
 ### Added

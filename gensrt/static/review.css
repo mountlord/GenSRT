@@ -1280,3 +1280,46 @@
     border-color: rgba(220, 38, 38, 0.6);
   }
   .stc-btn:active { transform: translateY(1px); }
+
+
+/* ── Copyable messages ──────────────────────────────────────────────────
+   PROJECT CONVENTION: any message a user might need to report — errors,
+   warnings, diagnostic output — must be selectable and copyable. The app
+   sets user-select: none broadly to make the player feel native, which
+   silently made error text unselectable too. Anything a user might paste
+   into a bug report opts back in here.
+
+   The copy button appears on hover and after a right-click, so it costs
+   nothing visually until wanted. */
+.copyable-message {
+  position: relative;
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: text;
+}
+
+.copyable-message:empty { display: none; }
+
+/* Always visible, not hover-only. A copy affordance nobody can find is the
+   same as no copy affordance — and the whole point is that someone reporting
+   a problem should not have to discover a hidden control first. */
+.copy-msg-btn {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  padding: 2px 8px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-dim);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+  opacity: 0.65;
+  transition: opacity 0.15s, color 0.15s, border-color 0.15s;
+  user-select: none;
+}
+
+.copyable-message:hover .copy-msg-btn { opacity: 1; }
+
+.copy-msg-btn:hover { color: var(--text); border-color: var(--text-dim); opacity: 1; }

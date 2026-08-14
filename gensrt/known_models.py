@@ -59,17 +59,20 @@ def _resolve_known_models_path() -> Path:
     Mirrors the auto-discovery order from :mod:`gensrt.config` so the side
     file lives next to the config the user actually edits.
     """
-    import sys
+    from gensrt.model_paths import app_dir, sidecar_dir
 
     candidates = [
-        Path(sys.argv[0]).resolve().parent / KNOWN_MODELS_FILENAME,
+        app_dir() / KNOWN_MODELS_FILENAME,
         Path.cwd() / KNOWN_MODELS_FILENAME,
     ]
-    # Prefer the one next to a config file already; otherwise CWD wins.
+    # An existing file always wins, wherever it is — moving a user's remembered
+    # models out from under them would be worse than an unusual location.
     for p in candidates:
         if p.is_file():
             return p
-    return candidates[-1]
+    # Creating: next to the executable, so it is where the user will look and
+    # stays put between sessions. See sidecar_dir().
+    return sidecar_dir() / KNOWN_MODELS_FILENAME
 
 
 def load_known_models() -> list[str]:

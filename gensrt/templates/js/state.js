@@ -153,3 +153,70 @@ function basenameFromPath(p) {
   const parts = s.split(/[\\/]/);
   return parts[parts.length - 1] || s;
 }
+
+
+// ── Copyable messages ───────────────────────────────────────────────────
+//
+// PROJECT CONVENTION: any message a user might need to report must be
+// selectable and copyable. Asking someone to screenshot an error to report it
+// is friction we control, and a screenshot loses the exact text — paths,
+// model names and version numbers all have to be retyped by whoever reads it.
+//
+// Attach with makeCopyable(el). Idempotent, so it is safe to call on every
+// render. Works on any element whose text is set via textContent.
+
+function makeCopyable(el) {
+  if (!el || el.dataset.copyableAttached === '1') return;
+  el.dataset.copyableAttached = '1';
+  el.classList.add('copyable-message');
+
+  const btn = document.createElement('button');
+  btn.className = 'copy-msg-btn';
+  btn.type = 'button';
+  btn.textContent = 'copy';
+  btn.title = 'Copy this message to the clipboard';
+
+  btn.addEventListener('click', async (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    // The button lives inside the element, so its own label would be copied
+    // along with the message. Read the text nodes only.
+    const text = Array.from(el.childNodes)
+      .filter(n => n.nodeType === Node.TEXT_NODE)
+      .map(n => n.textContent)
+      .join('')
+      .trim();
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      btn.textContent = 'copied';
+    } catch (err) {
+      // Clipboard API needs a secure context; WebView2 on 127.0.0.1 counts,
+      // but fall back rather than failing silently.
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand('copy'); btn.textContent = 'copied'; }
+      catch (e2) { btn.textContent = 'select + Ctrl-C'; }
+      document.body.removeChild(ta);
+    }
+    setTimeout(() => { btn.textContent = 'copy'; }, 1800);
+  });
+
+  // Callers set the message with `el.textContent = msg`, which REPLACES every
+  // child — including this button. That is why the first version of this
+  // silently did nothing: the button was appended once and destroyed by the
+  // next message. Rather than requiring every call site to use a special
+  // setter (and remembering to, forever), watch for it and put the button
+  // back. Self-healing, and new call sites get it for free.
+  const reattach = () => {
+    if (!el.contains(btn)) el.appendChild(btn);
+    btn.style.display = el.textContent.replace('copy', '').trim() ? '' : 'none';
+  };
+
+  new MutationObserver(reattach).observe(el, { childList: true });
+  reattach();
+}

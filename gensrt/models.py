@@ -174,6 +174,20 @@ class TranscriptionConfig:
     automatically — no manual sync required.
     """
 
+    # ASR engine selection.
+    #
+    #   "auto"      route by model name (see gensrt.asr.factory)
+    #   "chunked"   split at silence and decode each chunk separately
+    #   "longform"  hand the whole file to Whisper in one call
+    #
+    # "auto" is right almost always. The override exists because the routing
+    # is a heuristic about how a model was trained, and a heuristic that
+    # cannot be overridden is a guess the user has to live with. Forcing
+    # "chunked" on a multilingual model is a legitimate experiment: it trades
+    # Whisper's cross-window context for tighter timestamps and bounded
+    # hallucination, which may be the better trade on some material.
+    asr_engine: str = "auto"
+
     # Model
     model: str = "large-v3-turbo"
     # "auto" probes the hardware; "cuda" / "cpu" are honoured as explicit

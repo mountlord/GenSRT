@@ -623,6 +623,7 @@ _MODEL_CHOICES = {
 # "auto" defers to gpu_probe.default_compute_type_for(), which asks
 # CTranslate2 what the resolved device actually supports.
 _COMPUTE_CHOICES = {"auto", "float32", "float16", "int8_float16", "int8"}
+_ASR_ENGINE_CHOICES = {"auto", "chunked", "longform"}
 _DEVICE_CHOICES = {"cuda", "cpu", "auto"}
 _BACKEND_CHOICES = {"cuda", "rocm", "xpu", "cpu"}
 _ENGINE_CHOICES = {"google", "none"}
@@ -672,6 +673,7 @@ def _v_str_or_null(x):
 _CONFIG_VALIDATORS = {
     # Transcription
     "model":                   _v_str,
+    "asr_engine":              _v_str_in(_ASR_ENGINE_CHOICES),
     "device":                  _v_str_in(_DEVICE_CHOICES),
     "compute_type":            _v_str_in(_COMPUTE_CHOICES),
     "backend":                 _v_str_in(_BACKEND_CHOICES),
@@ -900,11 +902,21 @@ def api_validate_model():
         return jsonify({"status": "ok",
                         "message": f"'{name}' is a built-in Whisper model."})
 
-    # Local paths skip the network round-trip too.
-    p = Path(name)
-    if p.exists() and p.is_dir():
-        return jsonify({"status": "ok",
-                        "message": f"Local model directory found: {p}"})
+    # Local models skip the network round-trip. resolve_model handles both an
+    # explicit path and a bare name under <app dir>/models.
+    from gensrt.model_paths import describe_model_locations, resolve_model
+
+    resolved = Path(resolve_model(name))
+    if resolved.exists() and resolved.is_dir():
+        if (resolved / "model.bin").is_file():
+            return jsonify({"status": "ok",
+                            "message": f"Local model found: {resolved}"})
+        return jsonify({"status": "error", "message": (
+            f"'{resolved}' exists but does not contain a CTranslate2 "
+            f"'model.bin'. If you converted this model yourself, check the "
+            f"conversion completed and that you are pointing at the output "
+            f"directory itself rather than its parent."
+        )}), 400
 
     # HuggingFace metadata check: GET /api/models/<repo>.  This returns
     # JSON metadata if the repo exists and is accessible to the current
@@ -925,13 +937,43 @@ def api_validate_model():
         resp = requests.get(url, headers={"User-Agent": "GenSRT/1.x"}, timeout=10)
 
         if resp.status_code in (401, 403):
+            # HuggingFace deliberately returns 401 for BOTH a private/gated
+            # repo and one that does not exist, so that unauthenticated
+            # callers cannot enumerate private repo names.  Saying "exists but
+            # requires authentication" therefore claims more than the API
+            # told us, and sends someone off to request access to something
+            # that may simply not be there.
+            suggestion = ""
+            if name.lower().startswith(tuple(
+                f"{org}/ct2-" for org in (name.split("/", 1)[0],)
+            )):
+                org, repo = name.split("/", 1)
+                suggestion = (
+                    f"\n\nIf you added the 'ct2-' prefix yourself, that "
+                    f"converted variant may not have been published. Check "
+                    f"the original at "
+                    f"https://huggingface.co/{org}/{repo[4:]} — if it exists "
+                    f"but is a PyTorch model, you can convert it yourself."
+                )
             return jsonify({"status": "error", "message": (
-                f"'{name}' exists but requires authentication. "
-                "Run `hf auth login` and request access on the model page."
+                f"'{name}' is not accessible. HuggingFace does not "
+                f"distinguish between a repository that is private, one that "
+                f"is gated, and one that does not exist.\n\n"
+                f"Check the URL in a browser: "
+                f"https://huggingface.co/{name}\n"
+                f"If the page loads and asks you to request access, run "
+                f"`hf auth login` and request it there. If you get a 404, the "
+                f"repository name is wrong or the model has not been "
+                f"published.{suggestion}\n\n"
+                f"If you meant a model you converted yourself, no local model "
+                f"of that name was found either.\n\n"
+                f"{describe_model_locations()}"
             )}), 400
         if resp.status_code == 404:
-            return jsonify({"status": "error",
-                            "message": f"'{name}' was not found on HuggingFace."}), 400
+            return jsonify({"status": "error", "message": (
+                f"'{name}' was not found on HuggingFace, and no local model "
+                f"of that name exists.\n\n{describe_model_locations()}"
+            )}), 400
         if resp.status_code != 200:
             return jsonify({"status": "error",
                             "message": f"HuggingFace returned HTTP {resp.status_code}."}), 400
@@ -1030,6 +1072,8 @@ _TRANSFORMERS_MARKERS = ("pytorch_model.bin", "model.safetensors",
 
 
 def _ct2_format_problem(name: str, payload: dict) -> str | None:
+    from gensrt.model_paths import conversion_command, suggested_output_dir
+
     """Return a user-facing message if *payload* is not a CTranslate2 model.
 
     ``None`` means "looks loadable, or we could not tell".  Being unsure is
@@ -1056,9 +1100,12 @@ def _ct2_format_problem(name: str, payload: dict) -> str | None:
         return (
             f"'{name}' is a PyTorch/transformers model. GenSRT runs on "
             f"CTranslate2 and needs a converted model.{suggestion} "
-            f"Alternatively convert it yourself with: "
-            f"ct2-transformers-converter --model {name} --output_dir <dir> "
-            f"--quantization float16"
+            f"Alternatively convert it yourself. In a separate Python "
+            f"environment with ctranslate2, transformers and torch "
+            f"installed:\n\n"
+            f"{conversion_command(name)}\n\n"
+            f"Then enter just the folder name: "
+            f"{suggested_output_dir(name).name}"
         )
 
     return (
@@ -1829,6 +1876,15 @@ def launch_server(
             """Return any pre-loaded path (passed from CLI)."""
             return open_path
 
+    # Create <app dir>/models if it is missing, so the convention is visible
+    # in the install folder rather than only mentioned in an error message.
+    # Belt and braces with the installer doing the same: this also covers a
+    # user who copied the folder somewhere else, or an archive extractor that
+    # dropped an empty directory.
+    from gensrt.model_paths import ensure_models_dir
+
+    ensure_models_dir()
+
     api = Api()
 
     window = webview.create_window(
@@ -1838,6 +1894,16 @@ def launch_server(
         height=720,
         js_api=api,
         min_size=(800, 500),
+        # pywebview disables text selection by default (text_select=False),
+        # at the window level — below CSS, so no `user-select: text` rule can
+        # override it. That made every error message unselectable, which is
+        # why reporting one meant taking a screenshot.
+        #
+        # PROJECT CONVENTION: any message a user might need to report must be
+        # selectable and copyable. The player still feels native because the
+        # CSS sets user-select: none on the controls that need it; this only
+        # removes the blanket ban.
+        text_select=True,
     )
     api._window = window
 

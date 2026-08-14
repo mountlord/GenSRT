@@ -72,7 +72,7 @@ ALWAYS_CHUNKED_MODEL_PREFIXES: tuple[str, ...] = tuple(
 )
 
 
-def get_engine_for_model(model_name: str) -> ASREngine:
+def get_engine_for_model(model_name: str, override: str | None = None) -> ASREngine:
     """Return the ASR engine appropriate for *model_name*.
 
     Args:
@@ -80,6 +80,13 @@ def get_engine_for_model(model_name: str) -> ASREngine:
                     (``"large-v3-turbo"``), a HuggingFace repo ID
                     (``"smcproject/vegam-whisper-medium-ml-int8_float16"``),
                     or a local directory path.
+        override:   ``"chunked"`` or ``"longform"`` to bypass the routing
+                    rules entirely; ``"auto"``, ``None`` or ``""`` to apply
+                    them.  The rules below are a heuristic about how a model
+                    was trained, and there is no way to introspect that from
+                    a checkpoint — so the heuristic can be wrong, and a user
+                    who knows their material better than we do should be able
+                    to say so.
 
     Returns:
         An :class:`ASREngine` instance ready to call ``transcribe()`` on.
@@ -94,6 +101,18 @@ def get_engine_for_model(model_name: str) -> ASREngine:
           is chunked inference.
     """
     name = (model_name or "").strip()
+
+    choice = (override or "auto").strip().lower()
+    if choice == "chunked":
+        engine = _make_monolingual()
+        logger.info("ASR engine for %r: %s (forced by asr_engine)", name, engine.name)
+        return engine
+    if choice == "longform":
+        engine = _make_multilingual()
+        logger.info("ASR engine for %r: %s (forced by asr_engine)", name, engine.name)
+        return engine
+    if choice not in ("auto", ""):
+        logger.warning("Unrecognised asr_engine %r — using automatic routing.", override)
 
     # Built-in: always multilingual (current behavior, validated long-form).
     if name in BUILTIN_RECOMMENDED:

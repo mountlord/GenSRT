@@ -148,3 +148,48 @@ def test_other_os_errors_are_not_misreported(monkeypatch):
     with server.app.test_client() as c:
         r = c.post("/api/validate_model", json={"model": "org/repo"})
     assert "certificate" not in r.get_json()["message"].lower()
+
+
+def test_401_does_not_claim_the_repo_exists(monkeypatch):
+    """HuggingFace returns 401 for private, gated AND nonexistent repos.
+
+    Saying "exists but requires authentication" claims more than the API
+    reported, and sends someone off to request access to something that may
+    not be there.
+    """
+    import requests
+
+    from gensrt import server
+
+    class R:
+        status_code = 401
+
+        def json(self):
+            return {}
+
+    monkeypatch.setattr(requests, "get", lambda *a, **kw: R())
+    server.app.config["TESTING"] = True
+    with server.app.test_client() as c:
+        r = c.post("/api/validate_model", json={"model": "org/ct2-thing"})
+    msg = r.get_json()["message"]
+    assert "exists but requires" not in msg
+    assert "does not exist" in msg
+    assert "huggingface.co/org/ct2-thing" in msg
+
+
+def test_401_on_a_user_added_ct2_prefix_points_at_the_original(monkeypatch):
+    import requests
+
+    from gensrt import server
+
+    class R:
+        status_code = 401
+
+        def json(self):
+            return {}
+
+    monkeypatch.setattr(requests, "get", lambda *a, **kw: R())
+    server.app.config["TESTING"] = True
+    with server.app.test_client() as c:
+        r = c.post("/api/validate_model", json={"model": "adalat-ai/ct2-whisper-small-ml"})
+    assert "huggingface.co/adalat-ai/whisper-small-ml" in r.get_json()["message"]

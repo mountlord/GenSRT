@@ -260,9 +260,27 @@ def _run_asr(
     user must see — chiefly a GPU-to-CPU fallback at model load.
     """
     from gensrt.asr import get_engine_for_model
+    from gensrt.asr.factory import get_known_language_for_model
 
-    engine = get_engine_for_model(config.model)
+    engine = get_engine_for_model(config.model, getattr(config, "asr_engine", "auto"))
     logger.info("ASR engine: %s (model=%s)", engine.name, config.model)
+
+    # Chunking a multilingual model with automatic language detection means
+    # each chunk is detected independently, so the language can flip part-way
+    # through a file on ambiguous audio. The registered monolingual models
+    # avoid this by using their known training language; a general model has
+    # no such fallback, so say so rather than let it surprise someone.
+    if (
+        engine.name == "MonolingualWhisperEngine"
+        and config.source_language in ("auto", "", None)
+        and get_known_language_for_model(config.model) is None
+    ):
+        logger.warning(
+            "Chunked inference with source_language='auto': each chunk is "
+            "language-detected on its own, so the language can change part-way "
+            "through the file. Set the source language explicitly (e.g. "
+            "--source-language ja) for consistent results."
+        )
     return engine.transcribe(wav_path, config, status=status)
 
 

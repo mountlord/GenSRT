@@ -151,6 +151,11 @@ GitShouldNotSee/
 *.bak
 source-videos/
 RELEASE-NOTES*
+models/*
+!models/README.txt
+gensrt-patch-*.zip
+manifest*.sha256
+patch-work/*
 
 # Bundled ffmpeg/ffprobe — copy these from a gyan.dev essentials build
 # into gensrt/bin/ before running Pack-gensrt.ps1.  Not tracked in git

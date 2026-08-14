@@ -365,6 +365,10 @@
       </div>
       <div style="font-size: 12px; color: var(--text-dim); line-height: 1.5; margin-bottom: 12px;">
         Models must be in CTranslate2 format (look for <code>-ct2</code>, <code>-faster</code>, or pre-converted faster-whisper builds on HuggingFace).
+        <br><br>
+        To use a model you converted yourself, put it in its own subdirectory of
+        <code>models\</code> beside <code>gensrt.exe</code> and enter just the folder name.
+        A full path to a directory anywhere on disk also works.
       </div>
       <input type="text" id="addModelInput"
              placeholder="org/model-name"
@@ -372,11 +376,17 @@
              spellcheck="false"
              style="width: 100%; background: var(--surface2); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 8px 10px; font-size: 13px; font-family: var(--font-mono);">
       <!-- white-space: pre-line so multi-line guidance renders as written.
-           Error messages from /api/validate_model include numbered steps
-           (e.g. the certificate-verification failure), and HTML would
-           otherwise collapse them into one run-on paragraph. Set via
-           textContent in api.js, so this stays injection-safe. -->
+           Error messages here include numbered steps and paths, and HTML
+           would otherwise collapse them into one run-on paragraph. Set via
+           textContent in api.js, so this stays injection-safe.
+
+           PROJECT CONVENTION: any message a user might need to report must
+           be selectable and copyable. Screenshotting an error to ask for help
+           is friction we control, and a screenshot loses the exact text.
+           Selection also needs text_select=True on the pywebview window —
+           see launch_server; CSS alone cannot enable it. -->
       <div id="addModelStatus"
+           class="copyable-message"
            style="font-size: 12px; line-height: 1.5; margin-top: 10px; min-height: 18px;
                   white-space: pre-line; max-height: 40vh; overflow-y: auto;"></div>
     </div>

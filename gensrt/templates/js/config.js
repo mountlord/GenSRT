@@ -26,6 +26,11 @@ const configSchema = {
                 'fi', 'cs', 'he', 'ur', 'fa'],
       hint: 'Default audio language code (ISO 639-1).  "auto" detects per-file.  Footer selector overrides per job.',
     },
+    'asr_engine': {
+      type: 'select',
+      options: ['auto', 'chunked', 'longform'],
+      hint: 'How audio reaches the model.  "auto" picks by model.  "chunked" splits at silence and decodes each piece separately — tighter timestamps, less hallucination, but no context across chunks.  "longform" sends the whole file.',
+    },
     'device': {
       type: 'select',
       options: ['auto', 'cuda', 'cpu'],

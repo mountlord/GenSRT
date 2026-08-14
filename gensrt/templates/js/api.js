@@ -193,6 +193,7 @@ function _openAddModelModal() {
   const modal  = document.getElementById('addModelModal');
   const input  = document.getElementById('addModelInput');
   const status = document.getElementById('addModelStatus');
+  makeCopyable(status);   // project convention: reportable messages are copyable
   const cancel = document.getElementById('addModelCancel');
   const ok     = document.getElementById('addModelOk');
   if (!modal || !input || !ok || !cancel) return;

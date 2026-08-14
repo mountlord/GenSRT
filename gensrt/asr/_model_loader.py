@@ -112,6 +112,12 @@ def load_whisper_model(
     Raises:
         TranscriptionError: If every device/compute-type combination failed.
     """
+    from gensrt.model_paths import resolve_model
+
+    # A bare name may refer to a directory under <app dir>/models; anything
+    # else passes through as a HuggingFace repo ID.
+    model_ref = resolve_model(config.model)
+
     requested_device = (config.device or "cpu").strip().lower()
     requested_ct = config.compute_type
 
@@ -121,7 +127,7 @@ def load_whisper_model(
 
     logger.info(
         "Loading Whisper model: %s  (device=%s, compute=%s)",
-        config.model, requested_device, requested_ct,
+        model_ref, requested_device, requested_ct,
     )
 
     last_exc: Exception | None = None
@@ -129,7 +135,7 @@ def load_whisper_model(
     for device in device_ladder:
         for ct in _compute_type_ladder(device, requested_ct):
             try:
-                model = WhisperModel(config.model, device=device, compute_type=ct)
+                model = WhisperModel(model_ref, device=device, compute_type=ct)
             except Exception as exc:
                 last_exc = exc
                 logger.debug(

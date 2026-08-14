@@ -324,6 +324,17 @@ if (Test-Path ".\user_guide.html") {
     Write-Host "  - user_guide.html not found" -ForegroundColor Yellow
 }
 
+# ── Models directory ───────────────────────────────────────────────────────
+#
+# Ship the convention so the folder is visible on extraction rather than only
+# described in a message. GenSRT also creates it at startup, so this is
+# belt-and-braces.
+
+Write-Host ""
+Write-Host "Creating models directory..." -ForegroundColor Yellow
+New-Item -ItemType Directory -Force -Path ".\dist\gensrt\models" | Out-Null
+Write-Host "  - dist\gensrt\models\" -ForegroundColor Gray
+
 # ── Size report ────────────────────────────────────────────────────────────
 
 # ── Post-build verification ────────────────────────────────────────────────

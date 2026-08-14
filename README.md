@@ -34,6 +34,14 @@ GenSRT generates SRT subtitle files from video using GPU-accelerated speech reco
   </sub>
 </p>
 
+## What's new in v1.2.6
+
+**Models you converted yourself have a home.** Put a CTranslate2 model in `models\` beside `gensrt.exe` and enter just the folder name. When GenSRT meets a PyTorch model it now hands you the conversion command with your real path already in it.
+
+**Error messages can be copied.** They could not be before — pywebview disables text selection at the window level, below where CSS reaches — so reporting one meant taking a screenshot. Now selectable, with a copy button.
+
+**A ~13 MB patch** is available for anyone already on v1.2.5, instead of the full download. Seven files changed between the two releases.
+
 ## What's new in v1.2.5
 
 **Two installers.** A CPU-only build alongside the CUDA one. GenSRT no longer bundles PyTorch — transcription runs on CTranslate2 end to end, and PyTorch was only ever there to answer "is a GPU present?", which CTranslate2 answers itself. The CPU build carries no GPU libraries at all. If bandwidth is expensive where you are, that is the point.
@@ -56,8 +64,8 @@ See the [v1.2 release notes](https://github.com/mountlord/GenSRT/releases/tag/v1
 
    | Download | For | Size |
    |---|---|---|
-   | `gensrt-install.exe` | NVIDIA GPU machines | 1,540 MB |
-   | `gensrt-install-cpu.exe` | everything else — Intel/AMD, integrated graphics, older laptops | 120 MB |
+   | `gensrt-install.exe` | NVIDIA GPU machines | larger |
+   | `gensrt-install-cpu.exe` | everything else — Intel/AMD, integrated graphics, older laptops | **much smaller** |
 
    If you're unsure, or you're on a metered or slow connection, take the CPU build. It runs everywhere; it's just slower. You can always add the CUDA build later.
 2. Run `gensrt.exe` from the install folder. The GUI opens.
@@ -111,7 +119,7 @@ GPU vs. CPU is also a substantial difference. Measured on the same 4.5-minute Ma
 
 | Hardware | Compute | Time | vs. clip length |
 |---|---|---|---|
-| RTX 3060M 6GB PCIe | float16 | **2.7 min** | 0.6× |
+| RTX 3060 Laptop (CUDA) | float16 | **2.7 min** | 0.6× |
 | AMD Ryzen 5 PRO 4650GE, 6-core (CPU) | int8 | **41 min** | **9×** |
 
 **Plan for roughly nine times the length of your audio on CPU.** A 5-minute clip takes about 45 minutes; a 45-minute episode takes most of a working day. That is workable for short clips or an overnight batch, and painful if you were expecting minutes.
@@ -124,6 +132,7 @@ If your machine has 8 GB of RAM, prefer medium-sized models. A medium model in i
 
 ## Features
 
+- **Use models you converted yourself** — drop a CTranslate2 model into `models\` next to `gensrt.exe` and enter the folder name
 - **Translate to any language** — `--target-language ko` (or `ja`, `hi`, `fr`…), or pick a target in the Config panel. Uses Google Translate; needs a network connection.
 - **Plug-in any HuggingFace Whisper model** — add custom faster-whisper-compatible models via the GUI's Model selector or the `--model` CLI argument.
 - **WebVTT alongside SRT** — every generation writes both `.srt` and `.vtt` so the output works in HTML5 `<video>` elements natively.

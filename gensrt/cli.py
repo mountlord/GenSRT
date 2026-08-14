@@ -109,6 +109,17 @@ def _build_parser() -> argparse.ArgumentParser:
         help=f"Whisper model name (default: {bd['model']!r}).",
     )
     mdl.add_argument(
+        "--asr-engine",
+        dest="asr_engine",
+        choices=["auto", "chunked", "longform"],
+        default=None,
+        help=f"How audio is fed to the model (default: {bd['asr_engine']!r}). "
+             "'chunked' splits at detected silence and decodes each piece "
+             "separately — tighter timestamps and bounded hallucination, at "
+             "the cost of cross-window context. 'longform' hands Whisper the "
+             "whole file. 'auto' picks by model.",
+    )
+    mdl.add_argument(
         "--device",
         choices=["cuda", "cpu"],
         default=None,
