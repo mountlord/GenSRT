@@ -7,6 +7,7 @@
 - `translation_fallback` config field / `--translation-fallback` flag: what happens when a Google GTX batch fails outright — `nllb` (translate offline; default), `mymemory` (the old behaviour), or `none` (keep the source text).
 - `translation_model` config field: which NLLB conversion to use — a HuggingFace repo ID, a folder name under `models/`, or a full path.
 - `--self-check` now reports whether the NLLB model is on disk.
+- `max_chunk_s` / `min_chunk_s` config fields (`--max-chunk-s` / `--min-chunk-s`): the chunked-inference sizes, previously hardcoded, are now tunable. Validated before any audio work (0 < min < max ≤ 30s).
 - **Add button** in the SRT Lines toolbar: creates the first line of a from-scratch subtitle file, prefilled from the playhead. Deliberately enabled only while the list is empty — once any line exists, Split's free-form times already place a new line anywhere (including gaps), and a second insertion affordance would only duplicate it.
 
 ### Changed
@@ -15,6 +16,7 @@
 - If NLLB is configured as the fallback but its model cannot be fetched (offline machine), the run warns once and continues with `translation_fallback: "none"` rather than failing. NLLB as the *primary* engine still fails loudly when unavailable — you asked for it by name.
 
 ### Fixed
+- **Chunked inference no longer discards short utterances.** Speech regions briefer than `min_chunk_s` (2s) were silently dropped — deleting every short exclamation from the transcript, measured at ~4 minutes of speech lost in a 10-minute sparse-dialogue excerpt. Such regions are now transcribed whole (`short_region` in the chunk-plan log, which reports how many were kept). `min_chunk_s` now governs where cuts may land, not which speech exists.
 - A translation batch that failed after Google's own retries always fell back to MyMemory, whose output quality is not usable for subtitles and whose per-cue round-trips added ~50 s per failed batch. Failure handling is now configurable and defaults to an engine that produces usable output offline.
 
 ## v1.2.6 — 2026-08-14

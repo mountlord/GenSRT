@@ -189,6 +189,17 @@ class TranscriptionConfig:
     # hallucination, which may be the better trade on some material.
     asr_engine: str = "auto"
 
+    # Chunked-inference tuning (used only when the chunked engine runs).
+    # max_chunk_s: hard ceiling on chunk duration.  6.0s is sized for the
+    #   CTranslate2 max_length truncation of fine-tuned models (~7s of
+    #   dense speech at 224 text tokens); raising it toward Whisper's 30s
+    #   window trades safety on fine-tunes for more context per decode.
+    # min_chunk_s: minimum size of a chunk produced by CUTTING.  Regions
+    #   shorter than this are transcribed whole (never discarded — the
+    #   pre-v1.2.7 discard deleted every utterance briefer than 2s).
+    max_chunk_s: float = 6.0
+    min_chunk_s: float = 2.0
+
     # Model
     model: str = "large-v3-turbo"
     # "auto" probes the hardware; "cuda" / "cpu" are honoured as explicit

@@ -11,7 +11,7 @@
 
 <p align="center">
   <b>GPU-accelerated subtitle generation for Windows.</b><br/>
-  Transcribe video to SRT using OpenAI Whisper, translate any-to-any via Google Translate, edit cues in a built-in player.
+  Transcribe video to SRT using OpenAI Whisper, translate any-to-any — online or fully offline — edit cues in a built-in player.
 </p>
 
 ---
@@ -21,7 +21,7 @@
 GenSRT generates SRT subtitle files from video using GPU-accelerated speech recognition, with built-in editing and any-to-any translation. The target use cases are serious subtitle work — content creators, fan subtitlers, accessibility teams, researchers working with non-English media.
 
 - **Transcribe.** Drop a video file, pick a language (or auto-detect), generate an SRT. Built-in support for OpenAI Whisper sizes (`tiny` through `large-v3-turbo`) plus any HuggingFace-compatible faster-whisper model — including community fine-tunes for specific languages.
-- **Translate.** Translate the generated SRT to any of 100+ languages via Google Translate. Translation happens cue-by-cue, preserving original timestamps. MyMemory fallback for offline scenarios or rate-limit cases.
+- **Translate.** Translate the generated SRT to any of 100+ languages — via Google Translate, or fully offline with NLLB-200 running on your own GPU/CPU. Translation preserves original timestamps, and what happens when Google rate-limits you is configurable (offline fallback by default).
 - **Edit.** Built-in player with live subtitle display. Split, merge, delete, and edit cues with immediate feedback in the player. Save to disk as SRT and WebVTT in one operation.
 
 <p align="center">
@@ -39,6 +39,8 @@ GenSRT generates SRT subtitle files from video using GPU-accelerated speech reco
 - **Offline translation via NLLB-200 on CTranslate2** — no network, no rate limits, one-time ~650 MB model download, zero new dependencies. Non-commercial model license; see [Offline translation (NLLB)](#offline-translation-nllb).
 - **Configurable Google failure handling** (`translation_fallback`: `nllb` / `mymemory` / `none`) — failed batches no longer silently degrade to MyMemory, and a run with failures logs one summary line instead of one warning per batch.
 - **Rate-limit-aware Google GTX** — HTTP 429/503 now back off on a longer ladder (honouring `Retry-After`), and batch requests are paced to avoid provoking the throttle in the first place.
+- **Chunked inference on any model, with tunable sizes** — force `--asr-engine chunked` (or `longform`) on any model, and tune `max_chunk_s` / `min_chunk_s`. See [Chunked vs. long-form inference](#chunked-vs-long-form-inference).
+- **Short utterances are no longer lost** — the chunker silently discarded speech regions under 2 seconds; on one test film that was 47% of everything the voice detector found. They are now transcribed whole.
 - **Add button in the SRT editor** — start a subtitle file from scratch. Available only while the list is empty; once lines exist, Split places a new line anywhere, including gaps.
 
 ## What's new in v1.2.6
@@ -64,8 +66,6 @@ GenSRT generates SRT subtitle files from video using GPU-accelerated speech reco
 For Malayalam users with vegam, this produces 2-3× more transcribed content than running the same model without chunking. The chunked path engages automatically — no configuration required.
 
 See the [v1.2 release notes](https://github.com/mountlord/GenSRT/releases/tag/v1.2.0) for the full changelog.
-
-
 
 ## Quick start
 
@@ -107,33 +107,20 @@ The trade-off is real but one-sided: R-MFT emits about four times as many very s
 
 ## Chunked vs. long-form inference
 
-GenSRT can feed audio to a Whisper model in two ways, and you can force
-either one on **any** model:
+GenSRT can feed audio to a Whisper model in two ways, and you can force either one on **any** model:
 
-- **`chunked`** — audio is sliced at detected silences and each piece is
-  decoded independently, then reassembled with original timestamps. This
-  is what makes community fine-tunes (vegam, R-MFT, kotoba and similar)
-  usable on long files at all: their converted checkpoints stop emitting
-  text after the first few seconds when handed a whole recording. Chunking
-  also gives tighter timestamps and bounds how far a hallucination can
-  spread — at the cost of Whisper's cross-window context.
-- **`longform`** — the whole file goes to the model in one pass, the way
-  stock Whisper is designed to run. On general multilingual models
-  (`large-v3`, `large-v3-turbo`…) this typically captures *more* speech on
-  sparse-dialogue material, because very short, isolated utterances can
-  fall below the chunker's minimum region size.
-- **`auto`** (default) — picks per model: known fine-tune patterns get
-  `chunked` (they need it), general multilingual models get `longform`.
+- **`chunked`** — audio is sliced at detected silences and each piece is decoded independently, then reassembled with original timestamps. This is what makes community fine-tunes (vegam, R-MFT, kotoba and similar) usable on long files at all: their converted checkpoints stop emitting text after the first few seconds when handed a whole recording. Chunking also gives tighter timestamps and bounds how far a hallucination can spread — at the cost of Whisper's cross-window context. Speech regions shorter than `min_chunk_s` are transcribed whole; nothing the voice detector finds is discarded.
+- **`longform`** — the whole file goes to the model in one pass, the way stock Whisper is designed to run. On general multilingual models (`large-v3`, `large-v3-turbo`…) this keeps the model's cross-window context on continuous speech.
+- **`auto`** (default) — picks per model: known fine-tune patterns get `chunked` (they need it), general multilingual models get `longform`.
 
-Forcing the choice is a legitimate experiment in both directions — e.g.
-`chunked` on `large-v3` to bound hallucination on noisy material, or
-`longform` on a fine-tune to see the truncation for yourself.
+Two sizes control the chunker, tunable in the config, on the CLI, or in the settings editor (⚙️):
 
-Where to set it:
+- `max_chunk_s` (default 6.0) — the longest allowed chunk. 6s suits fine-tuned models' truncation limit (~7s of dense speech); values up to 30 (Whisper's window) trade that safety for more context per decode.
+- `min_chunk_s` (default 2.0) — the smallest chunk a cut may produce. Cut placement only: shorter speech regions are still transcribed, as single whole chunks.
 
-- CLI: `--asr-engine chunked` / `--asr-engine longform` / `--asr-engine auto`
-- Config: `"asr_engine": "auto"` in `gensrt-config.json`
-- GUI: Configuration editor (⚙️) → `asr_engine`
+Where to set the engine: `--asr-engine chunked` / `longform` / `auto` on the CLI, `"asr_engine"` in `gensrt-config.json`, or the Configuration editor (⚙️) in the GUI.
+
+> **Quiet or breathy speech?** The voice detector's defaults are tuned for clear dialogue and will skip soft speech entirely. Lower the threshold and widen the padding — e.g. `--vad-threshold 0.20 --vad-speech-pad-ms 300 --vad-min-speech-ms 150` recovered ~30% more speech on quiet test material.
 
 ## Offline translation (NLLB)
 
@@ -194,8 +181,9 @@ If your machine has 8 GB of RAM, prefer medium-sized models. A medium model in i
 ## Features
 
 - **Use models you converted yourself** — drop a CTranslate2 model into `models\` next to `gensrt.exe` and enter the folder name
-- **Translate to any language** — `--target-language ko` (or `ja`, `hi`, `fr`…), or pick a target in the Config panel. Uses Google Translate; needs a network connection.
+- **Translate to any language** — `--target-language ko` (or `ja`, `hi`, `fr`…), or pick a target in the Config panel. Google Translate online, or NLLB-200 fully offline.
 - **Plug-in any HuggingFace Whisper model** — add custom faster-whisper-compatible models via the GUI's Model selector or the `--model` CLI argument.
+- **Chunked or long-form inference on any model** — forceable and tunable; see [Chunked vs. long-form inference](#chunked-vs-long-form-inference).
 - **WebVTT alongside SRT** — every generation writes both `.srt` and `.vtt` so the output works in HTML5 `<video>` elements natively.
 - **Live in-player subtitle display** while editing — Add, Split, Merge, Delete, and text edits show in the player immediately.
 - **Burn-in subtitles** — bake subtitles into a copy of the video with one click; runs in the background.

@@ -22,5 +22,7 @@
   "max_line_chars": 42,
   "max_lines": 2,
   "translation_fallback": "nllb",
-  "translation_model": "mijuanlo/nllb-200-distilled-600M-ct2-int8"
+  "translation_model": "mijuanlo/nllb-200-distilled-600M-ct2-int8",
+  "max_chunk_s": 6.0,
+  "min_chunk_s": 2.0
 }

@@ -1,10 +1,19 @@
 """Silent-boundary chunking algorithm.
 
 Implements the v1.2 rule: every chunk boundary lands in a silent slot,
-no chunk exceeds ``max_chunk_s`` seconds, minimum chunk size is
-``min_chunk_s`` seconds.  If no detectable silence exists within the
-valid range, fall back to the audio energy minimum (lowest-RMS 20 ms
-window).
+no chunk exceeds ``max_chunk_s`` seconds, and ``min_chunk_s`` sets the
+minimum size of a chunk *produced by cutting*.  If no detectable silence
+exists within the valid range, fall back to the audio energy minimum
+(lowest-RMS 20 ms window).
+
+Since v1.2.7, speech regions shorter than ``min_chunk_s`` are emitted as
+single unsplit chunks (``cut_method="short_region"``) instead of being
+silently discarded.  The old discard behaviour cost real speech —
+measured at ~4 minutes lost in a 10-minute sparse-dialogue excerpt, and
+worst on material dominated by short exclamatory utterances, where a
+large fraction of outer-VAD regions fall under 2 s.  A 1.5 s utterance
+does not need subdividing, but it does not deserve deletion either: the
+minimum governs where cuts may land, not which speech exists.
 
 This is the algorithmic core proven out in the
 ``chunked_vegam_silent_boundary.py`` test script during the I-2
@@ -63,6 +72,11 @@ INNER_VAD_MIN_SPEECH_MS: int = 200
 DEFAULT_MAX_CHUNK_S: float = 6.0
 DEFAULT_MIN_CHUNK_S: float = 2.0
 
+# Absolute floor below which a region is treated as a VAD artifact rather
+# than speech.  Outer VAD's min_speech_duration_ms (>=150 ms in practice)
+# already prevents these; this guard is defensive.
+_MIN_EMITTABLE_REGION_S: float = 0.05
+
 
 # ──────────────────────────────────────────────────────────────────────────
 # Public API
@@ -86,14 +100,17 @@ def plan_chunks(
                       tuples.  Each region is processed independently —
                       no chunk ever spans across a region boundary.
         max_chunk_s:  No chunk may exceed this duration (default 6.0s).
-        min_chunk_s:  Skip regions shorter than this (default 2.0s).
+        min_chunk_s:  Minimum chunk size when subdividing (default 2.0s).
+                      Regions shorter than this are emitted whole as
+                      ``short_region`` chunks, never discarded.
 
     Returns:
         List of chunk dicts, each with:
             * ``start_s`` (float)        — absolute start in audio
             * ``end_s`` (float)          — absolute end in audio
             * ``duration_s`` (float)
-            * ``cut_method`` (str)       — "silence", "energy_min", or "region_end"
+            * ``cut_method`` (str)       — "silence", "energy_min",
+                                            "region_end", or "short_region"
             * ``silence_tier`` (int|None) — index into PROGRESSIVE_VAD_CONFIGS,
                                             or None for non-silence cuts
             * ``silence_tier_label`` (str|None)
@@ -130,8 +147,25 @@ def _chunk_region(
     duration = region_end - region_start
     chunks: list[dict] = []
 
+    if duration < _MIN_EMITTABLE_REGION_S:
+        # Degenerate sliver (well under any real utterance) — outer VAD's
+        # min_speech_duration_ms normally prevents these; skip defensively.
+        return chunks
+
     if duration < min_chunk_s:
-        # Region too short to emit as a chunk at all.
+        # Shorter than the cutting minimum: emit whole, unsplit.  Through
+        # v1.2.6 these regions were discarded outright, deleting every
+        # utterance briefer than min_chunk_s from the transcript.
+        chunks.append({
+            "start_s":            round(region_start, 3),
+            "end_s":              round(region_end, 3),
+            "duration_s":         round(duration, 3),
+            "cut_method":         "short_region",
+            "silence_tier":       None,
+            "silence_tier_label": None,
+            "silence_dur_ms":     None,
+            "rms_at_cut":         None,
+        })
         return chunks
 
     if duration <= max_chunk_s:
@@ -330,6 +364,7 @@ def summarize_chunk_plan(chunks: list[dict]) -> dict:
             * ``n_silence``        — chunks cut at detected silence
             * ``n_energy_min``     — chunks cut at energy minimum (fallback)
             * ``n_region_end``     — chunks ending at region boundary
+            * ``n_short_region``   — sub-``min_chunk_s`` regions emitted whole
             * ``pct_silence``      — percentage of cuts at silence
             * ``pct_energy_min``   — percentage at fallback
     """
@@ -337,11 +372,13 @@ def summarize_chunk_plan(chunks: list[dict]) -> dict:
     n_silence  = sum(1 for c in chunks if c["cut_method"] == "silence")
     n_energy   = sum(1 for c in chunks if c["cut_method"] == "energy_min")
     n_regend   = sum(1 for c in chunks if c["cut_method"] == "region_end")
+    n_short    = sum(1 for c in chunks if c["cut_method"] == "short_region")
     return {
         "n_chunks":       n,
         "n_silence":      n_silence,
         "n_energy_min":   n_energy,
         "n_region_end":   n_regend,
+        "n_short_region": n_short,
         "pct_silence":    round(100.0 * n_silence / n, 1) if n else 0.0,
         "pct_energy_min": round(100.0 * n_energy  / n, 1) if n else 0.0,
     }

@@ -143,6 +143,25 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # ── Translation ───────────────────────────────────────────────────────
     tr = parser.add_argument_group("translation")
+    mdl.add_argument(
+        "--max-chunk-s",
+        dest="max_chunk_s",
+        type=float,
+        default=None,
+        help=f"Chunked inference: hard ceiling on chunk duration in seconds "
+             f"(default: {bd['max_chunk_s']}). Sized for fine-tuned models' "
+             f"~7s truncation limit; must not exceed Whisper's 30s window.",
+    )
+    mdl.add_argument(
+        "--min-chunk-s",
+        dest="min_chunk_s",
+        type=float,
+        default=None,
+        help=f"Chunked inference: minimum size of a chunk produced by "
+             f"cutting, in seconds (default: {bd['min_chunk_s']}). Speech "
+             f"regions shorter than this are transcribed whole, not "
+             f"discarded.",
+    )
     tr.add_argument(
         "--translation-engine",
         dest="translation_engine",

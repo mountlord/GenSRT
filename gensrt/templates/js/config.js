@@ -56,6 +56,18 @@ const configSchema = {
       type: 'checkbox',
       hint: 'Filter silence before transcription.  Recommended.',
     },
+    'max_chunk_s': {
+      type: 'number', min: 1, max: 30, step: 0.5,
+      hint: 'Chunked inference: longest allowed chunk (seconds).  6 suits ' +
+            'fine-tuned models\u2019 truncation limit; up to 30 (Whisper\u2019s ' +
+            'window) trades safety for more context.',
+    },
+    'min_chunk_s': {
+      type: 'number', min: 0.1, max: 10, step: 0.1,
+      hint: 'Chunked inference: smallest chunk a cut may produce (seconds). ' +
+            'Speech regions shorter than this are transcribed whole \u2014 ' +
+            'never dropped.',
+    },
     'vad_threshold': {
       type: 'number', min: 0, max: 1, step: 0.05,
       hint: 'Voice detection sensitivity (0–1).  Lower = more permissive (more audio treated as speech).',

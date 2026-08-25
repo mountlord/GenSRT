@@ -95,23 +95,28 @@ class MonolingualWhisperEngine(ASREngine):
             return [], "unknown"
 
         # ── Step 3: Plan chunks ──────────────────────────────────────────
+        max_chunk_s = float(getattr(config, "max_chunk_s", None) or DEFAULT_MAX_CHUNK_S)
+        min_chunk_s = float(getattr(config, "min_chunk_s", None) or DEFAULT_MIN_CHUNK_S)
         chunks = plan_chunks(
             audio, sr, regions,
-            max_chunk_s=DEFAULT_MAX_CHUNK_S,
-            min_chunk_s=DEFAULT_MIN_CHUNK_S,
+            max_chunk_s=max_chunk_s,
+            min_chunk_s=min_chunk_s,
         )
         if not chunks:
+            # Since v1.2.7 short regions are emitted whole, so this is only
+            # reachable when every region was a sub-50ms VAD artifact.
             logger.warning(
-                "[%s] Chunk planner emitted no chunks.  All speech regions "
-                "were shorter than min_chunk_s.",
-                self.name,
+                "[%s] Chunk planner emitted no chunks (all regions were "
+                "degenerate slivers).", self.name,
             )
             return [], "unknown"
 
         stats = summarize_chunk_plan(chunks)
         logger.info(
-            "[%s] Chunk plan: %d chunks (%.1f%% silence cuts, %.1f%% energy-min)",
+            "[%s] Chunk plan: %d chunks (%.1f%% silence cuts, %.1f%% energy-min, "
+            "%d short region(s) kept whole)",
             self.name, stats["n_chunks"], stats["pct_silence"], stats["pct_energy_min"],
+            stats["n_short_region"],
         )
 
         # ── Step 4: Load model + per-chunk inference ─────────────────────

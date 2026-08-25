@@ -23,6 +23,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from gensrt.constants import PIPELINE_PHASES
+from gensrt.exceptions import ConfigError
 from gensrt.models import SRTSegment, TranscriptionConfig, TranscriptionResult
 
 logger = logging.getLogger(__name__)
@@ -60,6 +61,29 @@ def validate_translation_config(config: TranscriptionConfig) -> None:
     from gensrt.translation.factory import get_engine
 
     get_engine(config.translation_engine, config)
+
+
+def validate_chunking_config(config: TranscriptionConfig) -> None:
+    """Reject chunk-size settings that cannot work, before any audio work.
+
+    ``min_chunk_s`` must be positive and strictly below ``max_chunk_s``
+    (the cut-placement window is ``[start+min, start+max]`` — an empty
+    window would make subdivision impossible), and ``max_chunk_s`` may not
+    exceed Whisper's 30-second receptive window, beyond which the tail of
+    every chunk would be silently ignored by the model.
+    """
+    mn, mx = config.min_chunk_s, config.max_chunk_s
+    if not (mn > 0):
+        raise ConfigError(f"min_chunk_s must be > 0 (got {mn}).")
+    if not (mx > mn):
+        raise ConfigError(
+            f"max_chunk_s ({mx}) must be greater than min_chunk_s ({mn})."
+        )
+    if mx > 30.0:
+        raise ConfigError(
+            f"max_chunk_s ({mx}) exceeds Whisper's 30s window; audio past "
+            f"30s in a chunk would be silently ignored."
+        )
 
 
 def _needs_nllb(config: TranscriptionConfig) -> bool:
@@ -156,6 +180,7 @@ def run_pipeline(
     # Reject engine + target_language combinations the chosen engine can't
     # honour, before any expensive work (audio extract / model load) runs.
     validate_translation_config(config)
+    validate_chunking_config(config)
 
     # Fetch the offline translation model up front (one-time), alongside —
     # not instead of — whatever Whisper model download the run may trigger.
