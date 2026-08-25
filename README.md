@@ -34,6 +34,13 @@ GenSRT generates SRT subtitle files from video using GPU-accelerated speech reco
   </sub>
 </p>
 
+## What's new in v1.2.7
+
+- **Offline translation via NLLB-200 on CTranslate2** — no network, no rate limits, one-time ~650 MB model download, zero new dependencies. Non-commercial model license; see [Offline translation (NLLB)](#offline-translation-nllb).
+- **Configurable Google failure handling** (`translation_fallback`: `nllb` / `mymemory` / `none`) — failed batches no longer silently degrade to MyMemory, and a run with failures logs one summary line instead of one warning per batch.
+- **Rate-limit-aware Google GTX** — HTTP 429/503 now back off on a longer ladder (honouring `Retry-After`), and batch requests are paced to avoid provoking the throttle in the first place.
+- **Add button in the SRT editor** — start a subtitle file from scratch. Available only while the list is empty; once lines exist, Split places a new line anywhere, including gaps.
+
 ## What's new in v1.2.6
 
 **Models you converted yourself have a home.** Put a CTranslate2 model in `models\` beside `gensrt.exe` and enter just the folder name. When GenSRT meets a PyTorch model it now hands you the conversion command with your real path already in it.
@@ -57,6 +64,8 @@ GenSRT generates SRT subtitle files from video using GPU-accelerated speech reco
 For Malayalam users with vegam, this produces 2-3× more transcribed content than running the same model without chunking. The chunked path engages automatically — no configuration required.
 
 See the [v1.2 release notes](https://github.com/mountlord/GenSRT/releases/tag/v1.2.0) for the full changelog.
+
+
 
 ## Quick start
 
@@ -95,6 +104,58 @@ We recommend **R-MFT** (the Adalat AI model). On a blind comparison — the list
 The trade-off is real but one-sided: R-MFT emits about four times as many very short spurious cues (median 60 milliseconds — too brief to read during playback, but present in the SRT). vegam emits fewer of those, but its mistakes sit *inside* full-length cues, including occasional repetition loops, which no post-processing can remove without removing real speech.
 
 **Caveat on the comparison.** One clip, one native-speaker listener, six adjudicated differences. Enough to inform a recommendation; not a benchmark. Both models are actively maintained and your audio may differ from ours. The methodology and full measurements are in [INVESTIGATIONS.md](docs/INVESTIGATIONS.md) (entries I-7 and I-9).
+
+## Chunked vs. long-form inference
+
+GenSRT can feed audio to a Whisper model in two ways, and you can force
+either one on **any** model:
+
+- **`chunked`** — audio is sliced at detected silences and each piece is
+  decoded independently, then reassembled with original timestamps. This
+  is what makes community fine-tunes (vegam, R-MFT, kotoba and similar)
+  usable on long files at all: their converted checkpoints stop emitting
+  text after the first few seconds when handed a whole recording. Chunking
+  also gives tighter timestamps and bounds how far a hallucination can
+  spread — at the cost of Whisper's cross-window context.
+- **`longform`** — the whole file goes to the model in one pass, the way
+  stock Whisper is designed to run. On general multilingual models
+  (`large-v3`, `large-v3-turbo`…) this typically captures *more* speech on
+  sparse-dialogue material, because very short, isolated utterances can
+  fall below the chunker's minimum region size.
+- **`auto`** (default) — picks per model: known fine-tune patterns get
+  `chunked` (they need it), general multilingual models get `longform`.
+
+Forcing the choice is a legitimate experiment in both directions — e.g.
+`chunked` on `large-v3` to bound hallucination on noisy material, or
+`longform` on a fine-tune to see the truncation for yourself.
+
+Where to set it:
+
+- CLI: `--asr-engine chunked` / `--asr-engine longform` / `--asr-engine auto`
+- Config: `"asr_engine": "auto"` in `gensrt-config.json`
+- GUI: Configuration editor (⚙️) → `asr_engine`
+
+## Offline translation (NLLB)
+
+Since v1.2.7 GenSRT can translate **fully offline** using [NLLB-200](https://huggingface.co/facebook/nllb-200-distilled-600M) (No Language Left Behind, Meta AI) running on CTranslate2 — the same runtime that runs Whisper. One multilingual model covers every language in GenSRT's dropdowns, in any direction, with no API, no network dependency and no rate limits. The model (~650 MB) downloads once, automatically, at the start of the first run that needs it, into the same `models/` directory your Whisper models use.
+
+By default NLLB is the **fallback**: Google GTX remains the primary translator, and any batch Google fails — most commonly HTTP 429 once the endpoint starts rate-limiting your IP, which sustained heavy use (nightly batches of long recordings) reliably provokes — is translated offline instead. To skip Google entirely, set `"translation_engine": "nllb"` in `gensrt-config.json` or pass `--translation-engine nllb`.
+
+### License notice — read this if your use is commercial
+
+The NLLB-200 model **weights** are licensed **[CC-BY-NC-4.0](https://creativecommons.org/licenses/by-nc/4.0/)** by Meta: **non-commercial use only**. This restriction travels with the weights regardless of who converted or hosts them, and it applies to *your use of the model*, not to GenSRT itself (which remains AGPL-3.0 and does not bundle the weights — they download from HuggingFace on first use). GenSRT logs a reminder of this every time the NLLB engine loads.
+
+GenSRT does not interpret what counts as "commercial" — that is Meta's license text. If your subtitling work is commercial, opt out:
+
+```json
+"translation_fallback": "none"
+```
+
+(or `"mymemory"`), and leave `translation_engine` on `"google"`. With `"none"`, batches that Google fails keep their source text and the run summarises how many were affected. We are exploring a permissively-licensed offline alternative (M2M100, MIT) for a future release.
+
+### Choosing the model
+
+`translation_model` in the config selects which NLLB conversion to use — a HuggingFace repo ID (downloaded once into `models/`), a folder name under `models/`, or a full path. The default is a community int8 conversion of the official distilled-600M checkpoint; it loads as `int8_float16` on CUDA and `int8` on CPU, mirroring how GenSRT loads Whisper models.
 
 ## Requirements
 
@@ -136,7 +197,7 @@ If your machine has 8 GB of RAM, prefer medium-sized models. A medium model in i
 - **Translate to any language** — `--target-language ko` (or `ja`, `hi`, `fr`…), or pick a target in the Config panel. Uses Google Translate; needs a network connection.
 - **Plug-in any HuggingFace Whisper model** — add custom faster-whisper-compatible models via the GUI's Model selector or the `--model` CLI argument.
 - **WebVTT alongside SRT** — every generation writes both `.srt` and `.vtt` so the output works in HTML5 `<video>` elements natively.
-- **Live in-player subtitle display** while editing — Split, Merge, Delete, and text edits show in the player immediately.
+- **Live in-player subtitle display** while editing — Add, Split, Merge, Delete, and text edits show in the player immediately.
 - **Burn-in subtitles** — bake subtitles into a copy of the video with one click; runs in the background.
 - **Bundled ffmpeg** — no separate install required on target machines.
 - **Any-to-any translation** — Korean → Malayalam, Japanese → Tamil, Spanish → Hindi, all supported via Google Translate.

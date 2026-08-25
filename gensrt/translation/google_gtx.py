@@ -15,8 +15,25 @@ Batching:
     reduces network round-trips from N to ~1 per batch.
 
 Fallback:
-    If Google fails, individual segments are retried via MyMemory (free,
-    no key required, lower quality but reliable).
+    What happens when a GTX batch fails is configurable
+    (``translation_fallback`` in gensrt-config.json, wired in by the
+    factory):
+
+        nllb      translate the failed batch offline via NLLB-200 (default)
+        mymemory  per-segment retry via MyMemory (free, no key, low quality)
+        none      keep the source text for the failed batch
+
+    Failures are counted and summarised once at the end of the batch run —
+    a throttled IP fails *every* batch, and eighty identical WARNING lines
+    communicate nothing that one summary line does not.
+
+Rate limiting:
+    The GTX endpoint throttles by IP, and repeated heavy bursts (a nightly
+    batch of multi-hour files) can leave an IP throttled for hours — at
+    which point in-run retries cannot help, only the fallback can.  To
+    avoid *becoming* throttled, requests are paced (`_BATCH_DELAY_S`
+    between batch requests) and HTTP 429/503 responses back off on their
+    own, much longer, ladder — honouring Retry-After when Google sends it.
 """
 
 from __future__ import annotations
@@ -86,19 +103,52 @@ _GLUE_URL_BYTES = len(quote(_GLUE, safe=""))
 # a 100-cue file (~5s total), large enough not to look like a burst.
 _PER_ITEM_DELAY_S = 0.05
 
+# Pause between *batch* requests. A 3,000-cue file makes ~80 batch requests;
+# firing them back-to-back is exactly the burst signature that gets an IP
+# throttled, after which no in-run behaviour can recover. 0.4s costs ~30s on
+# that file and keeps the request rate boring.
+_BATCH_DELAY_S = 0.4
+
 _MAX_RETRIES = 3
 _RETRY_BASE_S = 0.25
+# HTTP 429/503 get their own, much longer, backoff ladder. The short ladder
+# above is sized for transient network hiccups; a rate limiter that answered
+# 429 at t=0 will still answer 429 at t=0.25s, so retrying that fast merely
+# adds to the request count being held against the IP. Retry-After, when
+# Google sends it, overrides these (capped at _RATE_LIMIT_MAX_WAIT_S).
+_RATE_LIMIT_DELAYS_S = (2.0, 8.0)
+_RATE_LIMIT_MAX_WAIT_S = 30.0
 _TIMEOUT_S = 15.0
 
 
 class GoogleGTXEngine(TranslationEngine):
-    """Translation via the unofficial Google Translate GTX endpoint."""
+    """Translation via the unofficial Google Translate GTX endpoint.
+
+    Args:
+        fallback: What to do when a batch fails outright — ``"nllb"``,
+            ``"mymemory"`` or ``"none"``.  Defaults to ``"mymemory"`` so
+            that direct construction (tests, scripts) behaves exactly as it
+            did before v1.2.7; the factory passes the configured value,
+            whose *config* default is ``"nllb"``.
+        fallback_engine_factory: Zero-arg callable returning a
+            :class:`TranslationEngine`, used when ``fallback="nllb"``.
+            Injected (rather than imported here) so this module never
+            depends on the NLLB engine, and so tests can substitute a fake.
+            Called lazily on the first failed batch and never on the happy
+            path.
+    """
 
     #: Set when a batch delimiter fails to survive translation. Once that
     #: happens for a given target language it will happen for every batch, so
     #: the remaining batches go straight to the per-cue path instead of
     #: wasting a failed request each.
     _glue_disabled: bool = False
+
+    def __init__(self, fallback: str = "mymemory",
+                 fallback_engine_factory=None) -> None:
+        self._fallback = (fallback or "mymemory").lower()
+        self._fallback_engine_factory = fallback_engine_factory
+        self._fallback_engine: TranslationEngine | None = None
 
     def is_available(self) -> bool:
         return True   # pure HTTP — no package deps beyond requests
@@ -135,24 +185,97 @@ class GoogleGTXEngine(TranslationEngine):
         tgt = target_language or "en"
         results: list[str] = [""] * len(texts)
 
-        for chunk_indices, chunk_texts in _make_chunks(texts):
+        chunks = _make_chunks(texts)
+        failed_batches = 0
+        last_cause: Exception | None = None
+
+        for n, (chunk_indices, chunk_texts) in enumerate(chunks):
+            if n and not self._glue_disabled:
+                # Pace the batch requests; the per-cue path paces itself.
+                time.sleep(_BATCH_DELAY_S)
             try:
                 if self._glue_disabled:
                     translated = self._translate_each(chunk_texts, src, tgt)
                 else:
                     translated = self._gtx_glue_batch(chunk_texts, src, tgt)
             except Exception as exc:
-                logger.warning(
-                    "[google-gtx] Batch failed (%s) — falling back to MyMemory.", exc
+                failed_batches += 1
+                last_cause = exc
+                # The first failure is worth a WARNING with its cause; the
+                # remaining ones are the same story (a throttled IP fails
+                # every batch identically) and go to DEBUG. One summary line
+                # at the end carries the totals.
+                log = logger.warning if failed_batches == 1 else logger.debug
+                log(
+                    "[google-gtx] Batch failed (%s) — handling via %r.",
+                    exc, self._fallback,
                 )
-                translated = [
-                    self._mymemory_single(t, src, tgt) for t in chunk_texts
-                ]
+                translated = self._handle_failed_batch(chunk_texts, src, tgt)
 
             for idx, text in zip(chunk_indices, translated):
                 results[idx] = text
 
+        if failed_batches:
+            logger.warning(
+                "[google-gtx] %d of %d batches failed (last cause: %s) — "
+                "handled via %r. If this recurs on every run, the GTX "
+                "endpoint is likely rate-limiting this IP; consider "
+                "translation_engine \"nllb\" to skip Google entirely.",
+                failed_batches, len(chunks), last_cause, self._fallback,
+            )
+
         return results
+
+    # ── Failed-batch handling ──────────────────────────────────────────────
+
+    def _handle_failed_batch(
+        self, chunk_texts: list[str], src: str, tgt: str
+    ) -> list[str]:
+        """Apply the configured fallback to one failed batch.
+
+        Every path returns a list the same length as *chunk_texts* and never
+        raises: a failed batch degrades, it does not abort the file.
+        """
+        if self._fallback == "none":
+            return list(chunk_texts)
+
+        if self._fallback == "nllb":
+            engine = self._get_fallback_engine()
+            if engine is not None:
+                try:
+                    return engine.translate_batch(chunk_texts, src, tgt)
+                except Exception as exc:
+                    logger.warning(
+                        "[google-gtx] NLLB fallback failed (%s) — keeping "
+                        "originals for this batch.", exc,
+                    )
+            return list(chunk_texts)
+
+        # "mymemory" — the pre-v1.2.7 behaviour.
+        return [self._mymemory_single(t, src, tgt) for t in chunk_texts]
+
+    def _get_fallback_engine(self):
+        """Construct the injected fallback engine once; None on failure."""
+        if self._fallback_engine is not None:
+            return self._fallback_engine
+        if self._fallback_engine_factory is None:
+            logger.warning(
+                "[google-gtx] fallback is 'nllb' but no fallback engine was "
+                "injected — keeping originals. (Engines built by the factory "
+                "always have one; this is reachable only via direct "
+                "construction.)"
+            )
+            return None
+        try:
+            self._fallback_engine = self._fallback_engine_factory()
+        except Exception as exc:
+            logger.warning(
+                "[google-gtx] Could not initialise the NLLB fallback (%s) — "
+                "keeping originals for failed batches.", exc,
+            )
+            self._fallback_engine_factory = None   # do not retry every batch
+            return None
+        return self._fallback_engine
 
     # ── GTX glue-string request ────────────────────────────────────────────
 
@@ -224,14 +347,28 @@ class GoogleGTXEngine(TranslationEngine):
         return "".join(seg[0] for seg in data[0] if seg[0])
 
     def _fetch_gtx(self, params: dict) -> list:
-        """GET the GTX endpoint with retry/back-off. Returns parsed JSON."""
+        """GET the GTX endpoint with retry/back-off. Returns parsed JSON.
+
+        Two backoff ladders: transient errors (timeouts, 5xx other than
+        503, malformed responses) retry quickly on ``_RETRY_BASE_S``;
+        rate-limit responses (429/503) wait on ``_RATE_LIMIT_DELAYS_S`` or
+        the server's own Retry-After, because a limiter that just said no
+        will keep saying no for a while, and rapid retries only deepen the
+        hole the IP is in.
+        """
         last_exc: Exception | None = None
         for attempt in range(1, _MAX_RETRIES + 1):
+            rate_limited = False
+            retry_after_s: float | None = None
             try:
                 resp = requests.get(
                     _GTX_URL, params=params, timeout=_TIMEOUT_S
                 )
                 if resp.status_code in (429, 503):
+                    rate_limited = True
+                    retry_after_s = _parse_retry_after(
+                        resp.headers.get("Retry-After")
+                    )
                     raise requests.HTTPError(f"HTTP {resp.status_code}")
                 resp.raise_for_status()
                 data = resp.json()
@@ -241,7 +378,14 @@ class GoogleGTXEngine(TranslationEngine):
             except Exception as exc:
                 last_exc = exc
                 if attempt < _MAX_RETRIES:
-                    delay = _RETRY_BASE_S * (2 ** (attempt - 1))
+                    if rate_limited:
+                        if retry_after_s is not None:
+                            delay = min(retry_after_s, _RATE_LIMIT_MAX_WAIT_S)
+                        else:
+                            ladder = _RATE_LIMIT_DELAYS_S
+                            delay = ladder[min(attempt, len(ladder)) - 1]
+                    else:
+                        delay = _RETRY_BASE_S * (2 ** (attempt - 1))
                     logger.debug(
                         "[google-gtx] Attempt %d/%d failed (%s) — retry in %.1fs",
                         attempt, _MAX_RETRIES, exc, delay,
@@ -271,6 +415,18 @@ class GoogleGTXEngine(TranslationEngine):
         except Exception as exc:
             logger.debug("[google-gtx] MyMemory fallback failed: %s", exc)
         return text   # return original on complete failure
+
+
+def _parse_retry_after(value: str | None) -> float | None:
+    """Parse a Retry-After header. Seconds form only; HTTP-date is rare
+    enough from this endpoint that falling back to the ladder is fine."""
+    if not value:
+        return None
+    try:
+        secs = float(value.strip())
+    except (TypeError, ValueError):
+        return None
+    return secs if secs >= 0 else None
 
 
 # ── Chunk helpers ──────────────────────────────────────────────────────────

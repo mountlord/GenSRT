@@ -73,6 +73,7 @@
       <div class="links-header">
         <span class="lh-title">SRT Lines</span>
         <span class="lh-count" id="linkCount"></span>
+        <button class="links-action-btn" id="addBtn" title="Add the first SRT line — available only while the list is empty; once lines exist, Split places a new line anywhere, including gaps">＋ Add</button>
         <button class="links-action-btn" id="splitBtn" title="Split SRT line">✂ Split</button>
         <button class="links-action-btn" id="mergeBtn" title="Merge adjacent SRT lines">🔗 Merge</button>
         <button class="links-action-btn" id="deleteBtn" title="Delete selected SRT lines">🗑 Delete</button>
@@ -248,6 +249,31 @@
     <div class="modal-footer">
       <button class="modal-btn cancel" id="modalCancel">Cancel</button>
       <button class="modal-btn save" id="modalSave">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- Add SRT Line Modal (first line only — see addFirstSegment in chapters.js) -->
+<div id="addModal" class="modal-overlay">
+  <div class="modal">
+    <div class="modal-header">Add First SRT Line</div>
+    <div class="modal-body">
+      <div class="modal-field">
+        <label>Start (HH:MM:SS.mmm)</label>
+        <input type="text" id="addStart" placeholder="00:00:00.000">
+      </div>
+      <div class="modal-field">
+        <label>End (HH:MM:SS.mmm)</label>
+        <input type="text" id="addEnd" placeholder="00:00:02.000">
+      </div>
+      <div class="modal-field">
+        <label>Text</label>
+        <textarea id="addText" rows="3" placeholder="Subtitle text"></textarea>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="modal-btn cancel" id="addModalCancel">Cancel</button>
+      <button class="modal-btn save" id="addModalSave">Save</button>
     </div>
   </div>
 </div>

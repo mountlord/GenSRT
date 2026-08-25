@@ -37,6 +37,7 @@ class TranslationEngineKey(str, Enum):
     """Translation engine selector."""
 
     GOOGLE = "google"
+    NLLB = "nllb"
     NONE = "none"
 
 
@@ -234,7 +235,28 @@ class TranscriptionConfig:
     # Translation
     translation_engine: str = "google"
     translate: bool = True
-    target_language: str = "en"     # ISO 639-1; non-en only supported by 'google'
+    target_language: str = "en"     # ISO 639-1; honoured by 'google' and 'nllb'
+
+    # What to do when a Google GTX batch fails outright (typically HTTP 429
+    # once the endpoint starts rate-limiting the IP):
+    #
+    #   "nllb"      translate the failed batch offline via NLLB-200
+    #   "mymemory"  the pre-v1.2.7 behaviour (slow, low quality, no license
+    #               restriction)
+    #   "none"      keep the source text for the failed batch
+    #
+    # "nllb" is the default because it is the only fallback that produces
+    # usable output when the IP is throttled for the whole run — but the
+    # NLLB *weights* are CC-BY-NC-4.0 (non-commercial only). A commercial
+    # user opts out by setting this to "none" or "mymemory". See README,
+    # "Offline translation (NLLB)".
+    translation_fallback: str = "nllb"
+
+    # Which NLLB model the "nllb" engine/fallback uses: a HuggingFace repo
+    # ID (downloaded once into models/), a bare directory name under
+    # models/, or a full path. Swapping to a different conversion is a
+    # config change, not a code change.
+    translation_model: str = "mijuanlo/nllb-200-distilled-600M-ct2-int8"
 
     # Backend (set by gpu_probe, not directly by user)
     backend: str = "cuda"

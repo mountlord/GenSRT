@@ -87,7 +87,27 @@ class MultilingualWhisperEngine(ASREngine):
         source_lang = None if config.source_language == "auto" else config.source_language
         kwargs: dict = dict(
             language=source_lang,
-            word_timestamps=True,
+            # word_timestamps is deliberately NOT requested.
+            #
+            # It was set to True in both engines and its output —
+            # `segment.words` — was never read anywhere in GenSRT.
+            # It cost an extra alignment pass on every chunk for
+            # nothing, and it crashed the process outright on
+            # distil-architecture models.
+            #
+            # faster-whisper implements it via
+            # ctranslate2.models.Whisper.align(), which indexes
+            # cross-attention heads. A distil model
+            # (kotoba-whisper-v2.0: 32 encoder layers, 2 decoder
+            # layers) does not have the layout that call assumes,
+            # and it reads out of bounds. That is a native
+            # segfault: no Python exception, no traceback, none of
+            # the error handling in this file fires. The process
+            # simply disappears.
+            #
+            # If word timestamps are ever genuinely needed, they
+            # must be opt-in and guarded — a crash below Python
+            # cannot be caught in-process.
             beam_size=5,
         )
 

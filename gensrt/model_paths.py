@@ -56,6 +56,32 @@ def app_dir() -> Path:
         return Path.cwd()
 
 
+def normalize_model_ref(name: str) -> str:
+    """Clean up a model reference typed or pasted by a user.
+
+    Strips surrounding whitespace and surrounding quotes.
+
+    The quotes matter more than they look.  Windows' Explorer has a
+    "Copy as path" item on the shift-right-click menu, and it copies
+
+        "D:\\Models\\kotoba-whisper-v2.0-ct2"
+
+    *with* the quotation marks.  Pasting that into the model box gave a path
+    that does not exist, and an error that talked about HuggingFace — which
+    sends the reader looking in entirely the wrong direction for a problem
+    caused by two characters.
+
+    Safe to strip unconditionally: ``"`` and ``'`` are not legal in Windows
+    filenames, and a HuggingFace repo ID never contains them.  Only matched
+    pairs are removed, so a genuinely odd name is left alone.
+    """
+    name = (name or "").strip()
+    for q in ('"', "'"):
+        if len(name) >= 2 and name.startswith(q) and name.endswith(q):
+            name = name[1:-1].strip()
+    return name
+
+
 def _is_writable(d: Path) -> bool:
     """Whether a file can actually be created in *d*.
 
@@ -216,7 +242,7 @@ def resolve_model(name: str) -> str:
     is what ``WhisperModel`` takes, and because leaving repo IDs untouched
     matters more than type tidiness here.
     """
-    name = (name or "").strip()
+    name = normalize_model_ref(name)
     if not name:
         return name
 

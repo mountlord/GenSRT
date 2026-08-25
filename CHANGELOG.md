@@ -1,5 +1,22 @@
 # Changelog
 
+## v1.2.7 — 2026-08-24
+
+### Added
+- **NLLB-200 offline translation engine** on CTranslate2 (`translation_engine: "nllb"` / `--translation-engine nllb`): fully offline, any mapped language pair, GPU-accelerated (`int8_float16` on CUDA, `int8` on CPU). The model (~650 MB) downloads once, automatically, at the start of the first run that needs it, into the `models/` directory. Zero new dependencies — CTranslate2 runs it, `tokenizers` (already present via faster-whisper) reads its tokenizer, `huggingface_hub` (likewise) downloads it. **Note: the NLLB model weights are CC-BY-NC-4.0 (non-commercial use only)** — the engine logs this at every load; see README, "Offline translation (NLLB)".
+- `translation_fallback` config field / `--translation-fallback` flag: what happens when a Google GTX batch fails outright — `nllb` (translate offline; default), `mymemory` (the old behaviour), or `none` (keep the source text).
+- `translation_model` config field: which NLLB conversion to use — a HuggingFace repo ID, a folder name under `models/`, or a full path.
+- `--self-check` now reports whether the NLLB model is on disk.
+- **Add button** in the SRT Lines toolbar: creates the first line of a from-scratch subtitle file, prefilled from the playhead. Deliberately enabled only while the list is empty — once any line exists, Split's free-form times already place a new line anywhere (including gaps), and a second insertion affordance would only duplicate it.
+
+### Changed
+- Google GTX rate-limit handling: HTTP 429/503 responses back off on a longer ladder (2 s, 8 s) and honour `Retry-After` (capped at 30 s) instead of retrying at 0.25 s — retrying a rate limiter that fast only deepens the hole the IP is in. Batch requests are additionally paced 0.4 s apart so a 3,000-cue file no longer presents the burst signature that provokes throttling.
+- Translation failure logging no longer floods: the first failed batch logs a WARNING with its cause, subsequent failures log at DEBUG, and the run ends with one summary WARNING carrying the totals and the likely diagnosis. Previously a throttled IP produced one WARNING per batch — ~80 for a typical long recording.
+- If NLLB is configured as the fallback but its model cannot be fetched (offline machine), the run warns once and continues with `translation_fallback: "none"` rather than failing. NLLB as the *primary* engine still fails loudly when unavailable — you asked for it by name.
+
+### Fixed
+- A translation batch that failed after Google's own retries always fell back to MyMemory, whose output quality is not usable for subtitles and whose per-cue round-trips added ~50 s per failed batch. Failure handling is now configurable and defaults to an engine that produces usable output offline.
+
 ## v1.2.6 — 2026-08-14
 
 ### Added

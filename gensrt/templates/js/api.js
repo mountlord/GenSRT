@@ -30,6 +30,7 @@ if (browseBtn) {
 }
 
 // ── Panel Header Action Listeners ────────────────────────
+if (addBtn)    addBtn.addEventListener('click',    (e) => { e.preventDefault(); addFirstSegment(); });
 if (splitBtn)  splitBtn.addEventListener('click',  (e) => { e.preventDefault(); splitSegmentAtPlayhead(); });
 if (mergeBtn)  mergeBtn.addEventListener('click',  (e) => { e.preventDefault(); mergeAdjacentSegments(); });
 if (deleteBtn) deleteBtn.addEventListener('click', (e) => { e.preventDefault(); deleteSelectedSegments(); });
@@ -68,6 +69,7 @@ updateButtonStates();
 
 const ENGINE_LABELS = {
   google:      'Google (GTX)',
+  nllb:        'NLLB (offline)',
   passthrough: 'None (skip translation)',
   none:        'None (skip translation)',
 };

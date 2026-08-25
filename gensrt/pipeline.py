@@ -42,22 +42,83 @@ def _noop_progress(_c: int, _t: int) -> None:
 def validate_translation_config(config: TranscriptionConfig) -> None:
     """Reject translation configs that cannot be honoured.
 
-    Retained as the single place engine/target compatibility is checked, and
-    called before any expensive work runs. Since v1.2.5 the only translating
-    engine is Google GTX, which handles any target language, so the only
-    reachable failure is an engine that no longer exists — surfaced here
-    rather than after the audio extract and model load.
+    Retained as the single place engine/fallback/target compatibility is
+    checked, and called before any expensive work runs — an invalid key
+    should surface here, not after the audio extract and model load.  Both
+    translating engines (Google GTX and NLLB) handle any mapped target
+    language.
     """
     if not config.translate:
         return
     if config.translation_engine.lower() == "none":
         return
 
-    # Resolving the engine validates the key; get_engine raises ConfigError
-    # with an actionable message for removed or unknown engines.
+    # Resolving the engine validates the engine key AND the fallback key
+    # (the factory wires translation_fallback into the Google engine);
+    # get_engine raises ConfigError with an actionable message for removed
+    # or unknown values.
     from gensrt.translation.factory import get_engine
 
-    get_engine(config.translation_engine)
+    get_engine(config.translation_engine, config)
+
+
+def _needs_nllb(config: TranscriptionConfig) -> bool:
+    """Whether this run could call the NLLB engine.
+
+    True when NLLB is the primary engine, or when Google is primary with
+    NLLB as its batch-failure fallback.
+    """
+    if not config.translate:
+        return False
+    engine = config.translation_engine.lower()
+    if engine == "nllb":
+        return True
+    return (
+        engine == "google"
+        and (config.translation_fallback or "").lower() == "nllb"
+    )
+
+
+def ensure_translation_model(
+    config: TranscriptionConfig, *, status=None
+) -> TranscriptionConfig:
+    """Fetch the NLLB model up front if this run might need it.
+
+    Runs before any transcription work, so the one-time ~650 MB download
+    happens in the same run — the same interactive moment — as a first-time
+    Whisper model download, and never lazily in the middle of an unattended
+    job (where a stalled fetch or a flaky connection would fail the file
+    *after* transcription had already spent its time).
+
+    Degradation is deliberately asymmetric:
+
+    * NLLB as the *primary* engine and unavailable → raise.  The user asked
+      for offline translation; silently doing something else would be worse
+      than stopping.
+    * NLLB as the *fallback* and unavailable → warn once and continue with
+      ``translation_fallback="none"``.  The run can still succeed entirely
+      via Google; the fallback quality degrades to keeping originals.
+
+    Returns:
+        *config*, possibly with the fallback downgraded (the dataclass is
+        frozen, so degradation produces a new instance).
+    """
+    if not _needs_nllb(config):
+        return config
+
+    from gensrt.translation.nllb_ct2 import ensure_model
+
+    try:
+        ensure_model(config.translation_model, status=status)
+        return config
+    except Exception as exc:
+        if config.translation_engine.lower() == "nllb":
+            raise
+        logger.warning(
+            "NLLB fallback model unavailable (%s) — failed Google batches "
+            "will keep their source text for this run.", exc,
+        )
+        return replace(config, translation_fallback="none")
 
 
 def run_pipeline(
@@ -95,6 +156,10 @@ def run_pipeline(
     # Reject engine + target_language combinations the chosen engine can't
     # honour, before any expensive work (audio extract / model load) runs.
     validate_translation_config(config)
+
+    # Fetch the offline translation model up front (one-time), alongside —
+    # not instead of — whatever Whisper model download the run may trigger.
+    config = ensure_translation_model(config, status=status)
 
     input_path = Path(input_path).resolve()
     output_path = Path(output_path)
@@ -309,7 +374,7 @@ def _maybe_translate(
         return segments
 
     from gensrt.translation.factory import get_engine
-    engine = get_engine(config.translation_engine)
+    engine = get_engine(config.translation_engine, config)
 
     texts = [seg.text for seg in segments]
     try:

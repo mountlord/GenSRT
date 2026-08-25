@@ -198,3 +198,49 @@ def test_app_dir_wins_when_both_hold_the_same_name(tmp_path, monkeypatch):
     monkeypatch.setattr(model_paths, "app_dir", lambda: appd)
     monkeypatch.chdir(tmp_path)
     assert model_paths.resolve_model("dup") == str(appd / "models" / "dup")
+
+
+# ── Pasted paths (Explorer's "Copy as path") ──────────────────────────────
+
+def test_quoted_windows_path_is_accepted(app):
+    """Explorer's shift-right-click "Copy as path" includes the quotes.
+
+    Pasting that produced a path that does not exist and an error message
+    about HuggingFace — pointing the reader at completely the wrong problem.
+    """
+    d = _make_model(app, "kotoba-whisper-v2.0-ct2")
+    quoted = f'"{d}"'
+    assert model_paths.resolve_model(quoted) == str(d)
+
+
+def test_single_quotes_too(app):
+    d = _make_model(app, "ct2-x")
+    assert model_paths.resolve_model(f"'{d}'") == str(d)
+
+
+def test_quoted_bare_name(app):
+    d = _make_model(app, "ct2-x")
+    assert model_paths.resolve_model('"ct2-x"') == str(d)
+
+
+def test_quoted_repo_id_still_resolves_as_a_repo_id(app):
+    assert model_paths.normalize_model_ref(
+        '"smcproject/vegam-whisper-medium-ml"'
+    ) == "smcproject/vegam-whisper-medium-ml"
+
+
+def test_unbalanced_quote_is_left_alone():
+    """Only matched pairs are stripped; an odd name stays odd."""
+    assert model_paths.normalize_model_ref('"unbalanced') == '"unbalanced'
+    assert model_paths.normalize_model_ref("trailing'") == "trailing'"
+
+
+def test_whitespace_inside_quotes(app):
+    d = _make_model(app, "ct2-x")
+    assert model_paths.resolve_model(f'"  {d}  "') == str(d)
+
+
+def test_empty_and_quotes_only():
+    assert model_paths.normalize_model_ref('""') == ""
+    assert model_paths.normalize_model_ref("") == ""
+    assert model_paths.normalize_model_ref(None) == ""

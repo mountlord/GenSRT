@@ -24,10 +24,9 @@ class TranslationEngine(ABC):
             text:            Text to translate.
             source_language: ISO 639-1 language code (e.g. ``"ja"``, ``"ko"``).
             target_language: ISO 639-1 language code for the desired output
-                             language.  Defaults to English.  Only the
-                             ``google`` engine currently honours non-English
-                             targets — the pipeline gates on this before
-                             calling the engine.
+                             language.  Defaults to English.  Both
+                             translating engines (``google`` and ``nllb``)
+                             honour non-English targets.
 
         Returns:
             Translated text in *target_language*.

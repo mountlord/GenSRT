@@ -97,6 +97,8 @@ function renderLinks(data) {
   chapterEls        = [];
   activeChapterEl   = null;
 
+  _updateSrtLineButtons();
+
   if (chapters.length === 0) {
     // Empty-state path: New Project / reset.  Clear the in-player
     // subtitle <track> BEFORE early-returning so the previous video's
@@ -367,6 +369,113 @@ function onSegMarkClick() {
 }
 
 if (segMarkBtn) segMarkBtn.addEventListener('click', onSegMarkClick);
+
+// ── Add (first line only) ──────────────────────────────────────────────
+//
+// The Add button exists for exactly one situation: an empty list.  Writing
+// subtitles from scratch for a video has no entry point without it — every
+// other affordance (Split, Merge, Delete, Edit) needs a line to act on.
+//
+// Once even one line exists, Add is disabled ON PURPOSE.  Split's dialog
+// takes free-form start/end times for both halves, so it already places a
+// new line anywhere — including inside a gap between existing lines — and a
+// second insertion affordance would just be a second way to do the same
+// thing, with its own edge cases around ordering and overlap.  One door per
+// room.
+
+function _updateSrtLineButtons() {
+  if (typeof addBtn !== 'undefined' && addBtn) {
+    addBtn.disabled = !!(chaptersArr && chaptersArr.length);
+  }
+}
+
+function addFirstSegment() {
+  // Defensive: the button is disabled whenever lines exist, but a stale DOM
+  // state (or a keyboard-focused click racing a render) shouldn't corrupt
+  // anything — explain instead.
+  if (chaptersArr && chaptersArr.length) {
+    showErrorDialog('Add',
+      'Add is only for starting an empty list. To insert a line between ' +
+      'existing ones, select a neighbouring line and use ' +
+      '<strong>Split</strong> — its times are free-form, so the second ' +
+      'half can be placed anywhere, including a gap.');
+    return;
+  }
+
+  // Prefill: playhead when a video is loaded and seeked, else zero.
+  // 2 seconds is the floor-to-cap middle ground of the SRT defaults.
+  let start = 0;
+  try {
+    if (player && isFinite(player.currentTime) && player.currentTime > 0) {
+      start = player.currentTime;
+    }
+  } catch {}
+  const end = start + 2.0;
+
+  document.getElementById('addStart').value = formatTimeForInput(start);
+  document.getElementById('addEnd').value   = formatTimeForInput(end);
+  document.getElementById('addText').value  = '';
+  document.getElementById('addModal').classList.add('visible');
+}
+
+const _addModal       = document.getElementById('addModal');
+const _addModalCancel = document.getElementById('addModalCancel');
+const _addModalSave   = document.getElementById('addModalSave');
+if (_addModalCancel) _addModalCancel.addEventListener('click', () => {
+  _addModal.classList.remove('visible');
+});
+if (_addModal) _addModal.addEventListener('click', (e) => {
+  if (e.target === _addModal) _addModal.classList.remove('visible');
+});
+
+if (_addModalSave) _addModalSave.addEventListener('click', () => {
+  // Re-check emptiness at save time, not just open time — an SRT drop or a
+  // finished Generate while the modal sat open would otherwise be clobbered
+  // by "the first line".
+  if (chaptersArr && chaptersArr.length) {
+    _addModal.classList.remove('visible');
+    showErrorDialog('Add',
+      'SRT lines appeared while this dialog was open (a generate or file ' +
+      'drop finished). Nothing was added — use <strong>Split</strong> to ' +
+      'insert into the existing lines.');
+    return;
+  }
+
+  const s = parseTimeInput(document.getElementById('addStart').value);
+  const e = parseTimeInput(document.getElementById('addEnd').value);
+  const t = document.getElementById('addText').value;
+
+  if (isNaN(s) || isNaN(e)) {
+    showErrorDialog('Invalid Time', 'Times must be in <strong>HH:MM:SS.mmm</strong> format.');
+    return;
+  }
+  if (s >= e) { showErrorDialog('Invalid Range', 'Start must be before End.'); return; }
+
+  const seg = {
+    index:      1,
+    start_time: Number(s.toFixed(3)),
+    end_time:   Number(e.toFixed(3)),
+    text:       t,
+    has_seams:  false,
+    seam_count: 0,
+    manual:     true,
+  };
+  if (fps && isFinite(fps)) {
+    seg.start_frame = frameAtTime(seg.start_time);
+    seg.end_frame   = frameAtTime(seg.end_time);
+  }
+
+  chaptersArr = [seg];
+  _reindexSegments(chaptersArr);
+
+  const proj    = _ensureEditableProject();
+  proj.segments = chaptersArr.map(ch => ({ ...ch }));
+  linksData     = proj;
+  renderLinks(proj);
+  if (typeof updateButtonStates === 'function') updateButtonStates();
+
+  _addModal.classList.remove('visible');
+});
 
 // Name kept for the api.js wiring (splitBtn click handler calls this).
 // Selection logic: use the row checkbox(es) — chapterSelections[i] is the

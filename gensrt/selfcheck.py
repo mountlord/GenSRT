@@ -246,6 +246,32 @@ def _check_cuda(report: _Report, *, required: bool) -> None:
             note(f"{name}: found at {path} but NOT loadable by name ({exc})")
 
 
+def _check_nllb(report: _Report) -> None:
+    """Report whether the offline translation model is on disk.
+
+    Absence is a warn, not a fail: the model downloads automatically
+    (~650 MB, one-time) at the start of the first run that needs it.
+    """
+    report.section("Offline translation (NLLB)")
+    try:
+        from gensrt.translation.nllb_ct2 import (
+            DEFAULT_MODEL, is_model_present, model_dir_for,
+        )
+
+        path = model_dir_for(DEFAULT_MODEL)
+        if is_model_present(DEFAULT_MODEL):
+            report.ok(f"NLLB model present: {path}")
+        else:
+            report.warn(
+                f"NLLB model not downloaded yet (expected at {path}). "
+                f"It downloads automatically (~650 MB, one-time) at the "
+                f"start of the first translating run. Model weights are "
+                f"CC-BY-NC-4.0 — non-commercial use only; see README."
+            )
+    except Exception as exc:   # pragma: no cover — defensive
+        report.warn(f"NLLB check skipped: {exc}")
+
+
 def _check_network(report: _Report) -> None:
     """Verify HTTPS to HuggingFace actually works, certificates included.
 
@@ -310,6 +336,7 @@ def run_self_check(*, require_cuda: bool = False) -> int:
     _check_third_party(report)
     _check_ffmpeg(report)
     _check_cuda(report, required=require_cuda)
+    _check_nllb(report)
     _check_network(report)
 
     for line in report.lines:

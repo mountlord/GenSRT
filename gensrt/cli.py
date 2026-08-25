@@ -146,11 +146,25 @@ def _build_parser() -> argparse.ArgumentParser:
     tr.add_argument(
         "--translation-engine",
         dest="translation_engine",
-        choices=["google", "none"],
+        choices=["google", "nllb", "none"],
         default=None,
         help=f"Translation engine (default: {bd['translation_engine']!r}). "
-             "'google' translates to any target language and needs a network "
-             "connection; 'none' transcribes without translating.",
+             "'google' uses the Google GTX endpoint (any target language, "
+             "needs a network connection); 'nllb' runs NLLB-200 fully "
+             "offline on this machine (one-time ~650 MB model download; "
+             "the model weights are CC-BY-NC-4.0 — non-commercial use "
+             "only, see README); 'none' transcribes without translating.",
+    )
+    tr.add_argument(
+        "--translation-fallback",
+        dest="translation_fallback",
+        choices=["nllb", "mymemory", "none"],
+        default=None,
+        help=f"What to do when a Google batch fails, e.g. on rate limiting "
+             f"(default: {bd['translation_fallback']!r}). 'nllb' translates "
+             f"the failed batch offline; 'mymemory' is the old low-quality "
+             f"web fallback; 'none' keeps the source text. Only meaningful "
+             f"with --translation-engine google.",
     )
     tr.add_argument(
         "--source-language",
@@ -426,6 +440,8 @@ def _print_banner(config: TranscriptionConfig) -> None:
     print(f"  Device : {config.device} ({config.backend})", file=sys.stderr)
     print(f"  Compute: {config.compute_type}", file=sys.stderr)
     print(f"  Engine : {config.translation_engine}", file=sys.stderr)
+    if config.translate and config.translation_engine == "google":
+        print(f"  Fallbk : {config.translation_fallback}", file=sys.stderr)
     print(f"  VAD    : {'on' if config.vad_enabled else 'off'}", file=sys.stderr)
     print("═" * 60, file=sys.stderr)
     print("", file=sys.stderr)

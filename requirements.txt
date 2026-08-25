@@ -31,6 +31,9 @@ rich>=13.0.0
 # CTranslate2 instead, which is both smaller and a more accurate answer,
 # since CTranslate2 is what actually runs the model.
 #
-# As of v1.2.5 nothing in GenSRT uses torch at all: the offline translation
-# engines that needed it were removed. Translation is Google GTX, which is a
-# plain HTTP call.
+# As of v1.2.5 nothing in GenSRT uses torch at all: the torch-based offline
+# translation engines were removed. v1.2.7 brings offline translation BACK —
+# NLLB-200 on CTranslate2 — still with no torch and, in fact, no new
+# dependencies at all: ctranslate2 runs the model, tokenizers (which arrives
+# with faster-whisper) reads the model's tokenizer.json, and huggingface_hub
+# (likewise) performs the one-time model download.

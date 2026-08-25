@@ -96,8 +96,26 @@ const configSchema = {
     },
     'translation_engine': {
       type: 'select',
-      options: ['google', 'none'],
-      hint: 'Default translation backend.  Footer selector overrides per job.',
+      options: ['google', 'nllb', 'none'],
+      hint: 'Default translation backend.  google needs a network connection; ' +
+            'nllb runs fully offline on this machine (one-time ~650 MB model ' +
+            'download; the NLLB model weights are CC-BY-NC-4.0 — ' +
+            'non-commercial use only, see README); none skips translation.',
+    },
+    'translation_fallback': {
+      type: 'select',
+      options: ['nllb', 'mymemory', 'none'],
+      hint: 'What to do when a Google batch fails (e.g. rate limiting). ' +
+            'nllb translates the failed batch offline (non-commercial ' +
+            'license, see README); mymemory is the old low-quality web ' +
+            'fallback; none keeps the source text.  Only applies when the ' +
+            'engine is google.',
+    },
+    'translation_model': {
+      type: 'text',
+      hint: 'NLLB model for the nllb engine/fallback: a HuggingFace repo ID ' +
+            '(downloaded once into models/), a folder name under models/, ' +
+            'or a full path.',
     },
     'target_language': {
       type: 'select',

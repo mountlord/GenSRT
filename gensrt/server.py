@@ -891,7 +891,9 @@ def api_validate_model():
     """
     from gensrt.known_models import BUILTIN_RECOMMENDED
     body = request.get_json(silent=True) or {}
-    name = (body.get("model") or "").strip()
+    from gensrt.model_paths import normalize_model_ref
+
+    name = normalize_model_ref(body.get("model"))
 
     if not name:
         return jsonify({"status": "error",
@@ -1127,7 +1129,9 @@ def api_add_known_model():
     from gensrt.known_models import add_known_model, get_combined_models
 
     body = request.get_json(silent=True) or {}
-    name = (body.get("model") or "").strip()
+    from gensrt.model_paths import normalize_model_ref
+
+    name = normalize_model_ref(body.get("model"))
 
     if not name:
         return jsonify({"status": "error",

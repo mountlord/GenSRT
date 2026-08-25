@@ -20,5 +20,7 @@
   "backend": "cuda",
   "target_language": "en",
   "max_line_chars": 42,
-  "max_lines": 2
+  "max_lines": 2,
+  "translation_fallback": "nllb",
+  "translation_model": "mijuanlo/nllb-200-distilled-600M-ct2-int8"
 }
