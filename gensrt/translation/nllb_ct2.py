@@ -438,10 +438,23 @@ class NLLBCT2Engine(TranslationEngine):
                 except Exception:
                     device = "cpu"
 
-            attempts = [device] if device == "cpu" else [device, "cpu"]
+            # Ladder of (device, compute_type) attempts.  The cuda/int8 rung
+            # exists for pre-Volta GPUs (Tesla P4 and the GTX 10-series):
+            # they cannot run int8_float16 efficiently, CTranslate2 refuses
+            # it, and without this rung the ladder fell straight through to
+            # CPU while a perfectly capable int8 GPU sat idle — logging a
+            # misleading "GPU unavailable" on top.  Whisper's loader lands
+            # on cuda/int8 for these cards; the translator now matches.
+            if device == "cpu":
+                attempts = [("cpu", "int8")]
+            else:
+                attempts = [
+                    (device, "int8_float16"),
+                    (device, "int8"),
+                    ("cpu", "int8"),
+                ]
             last_exc: Exception | None = None
-            for dev in attempts:
-                compute = "int8_float16" if dev == "cuda" else "int8"
+            for dev, compute in attempts:
                 try:
                     self._translator = ctranslate2.Translator(
                         str(model_dir), device=dev, compute_type=compute
@@ -458,6 +471,12 @@ class NLLBCT2Engine(TranslationEngine):
                         "NLLB: GPU unavailable — translating on CPU "
                         "(slower). Cause: %s", last_exc,
                     )
+                elif (dev, compute) != attempts[0][:2] and dev == "cuda":
+                    logger.info(
+                        "NLLB: this GPU has no efficient fp16 path — "
+                        "using int8 on CUDA (pre-Volta card, e.g. "
+                        "GTX 10-series / Tesla P4)."
+                    )
                 logger.info(
                     "NLLB translator loaded: %s (device=%s, compute=%s)",
                     model_dir.name, dev, compute,
@@ -467,7 +486,7 @@ class NLLBCT2Engine(TranslationEngine):
             raise TranslationError(
                 "nllb",
                 f"Failed to load NLLB model from {model_dir} on any of "
-                f"{attempts}: {last_exc}",
+                f"{[f'{d}/{c}' for d, c in attempts]}: {last_exc}",
             )
 
     def _load_tokenizer(self, model_dir: Path) -> None:

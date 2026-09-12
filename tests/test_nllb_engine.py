@@ -262,3 +262,97 @@ def test_default_model_is_the_documented_repo():
     """README, config.js hint and INSTRUCTIONS all name this repo — if the
     default moves, they all need the same edit."""
     assert DEFAULT_MODEL == "mijuanlo/nllb-200-distilled-600M-ct2-int8"
+
+
+# ── Device ladder (the Tesla P4 bug) ─────────────────────────────────────
+
+def _model_on_disk(tmp_path, monkeypatch):
+    local = tmp_path / "models" / "m"
+    local.mkdir(parents=True)
+    (local / "model.bin").write_bytes(b"x")
+    (local / "tokenizer.json").write_text("{}")
+    monkeypatch.setattr(
+        "gensrt.model_paths.model_search_dirs", lambda: [tmp_path / "models"]
+    )
+    return local
+
+
+def _engine_for_ladder(monkeypatch, tmp_path):
+    engine = NLLBCT2Engine()
+    engine._model_ref = "m"
+    _model_on_disk(tmp_path, monkeypatch)
+    monkeypatch.setattr(engine, "_load_tokenizer", lambda d: None)
+    return engine
+
+
+def test_pascal_gpu_lands_on_cuda_int8(tmp_path, monkeypatch, caplog):
+    """A GPU without efficient fp16 (Tesla P4, GTX 10-series) must get
+    cuda/int8 — not a silent fall-through to CPU.  This is the exact
+    failure observed on the P4: int8_float16 refused, translator on CPU,
+    misleading 'GPU unavailable' warning."""
+    calls = []
+
+    class _FakeCT2:
+        @staticmethod
+        def get_cuda_device_count():
+            return 1
+
+        class Translator:
+            def __init__(self, path, device, compute_type):
+                calls.append((device, compute_type))
+                if device == "cuda" and compute_type == "int8_float16":
+                    raise ValueError(
+                        "Requested int8_float16 compute type, but the target "
+                        "device or backend do not support efficient "
+                        "int8_float16 computation."
+                    )
+
+    import sys
+    monkeypatch.setitem(sys.modules, "ctranslate2", _FakeCT2)
+    engine = _engine_for_ladder(monkeypatch, tmp_path)
+
+    with caplog.at_level(logging.INFO, logger="gensrt.translation.nllb_ct2"):
+        engine._load()
+
+    assert calls == [("cuda", "int8_float16"), ("cuda", "int8")]
+    # Landed on the GPU: no "GPU unavailable" warning may fire.
+    assert not [r for r in caplog.records if "GPU unavailable" in r.message]
+    assert any("int8 on CUDA" in r.message for r in caplog.records)
+
+
+def test_modern_gpu_still_gets_int8_float16(tmp_path, monkeypatch):
+    calls = []
+
+    class _FakeCT2:
+        @staticmethod
+        def get_cuda_device_count():
+            return 1
+
+        class Translator:
+            def __init__(self, path, device, compute_type):
+                calls.append((device, compute_type))
+
+    import sys
+    monkeypatch.setitem(sys.modules, "ctranslate2", _FakeCT2)
+    engine = _engine_for_ladder(monkeypatch, tmp_path)
+    engine._load()
+    assert calls == [("cuda", "int8_float16")]
+
+
+def test_dead_gpu_still_degrades_to_cpu_with_warning(tmp_path, monkeypatch, caplog):
+    class _FakeCT2:
+        @staticmethod
+        def get_cuda_device_count():
+            return 1
+
+        class Translator:
+            def __init__(self, path, device, compute_type):
+                if device == "cuda":
+                    raise RuntimeError("CUDA driver version is insufficient")
+
+    import sys
+    monkeypatch.setitem(sys.modules, "ctranslate2", _FakeCT2)
+    engine = _engine_for_ladder(monkeypatch, tmp_path)
+    with caplog.at_level(logging.WARNING, logger="gensrt.translation.nllb_ct2"):
+        engine._load()
+    assert any("GPU unavailable" in r.message for r in caplog.records)

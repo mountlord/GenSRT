@@ -1,0 +1,38 @@
+# GenSRT — NVIDIA GPU acceleration libraries, PASCAL variant.
+#
+# GPU coverage: Pascal cards — GTX 10-series, Tesla P4/P40/P100 — which the
+# default variant no longer reaches: cuDNN dropped compute capability 6.x
+# in 9.12.0, and requirements-cuda.txt resolves to the newest 9.x.  This
+# file is identical except for the cuDNN cap.
+#
+#   python -m venv venv-pascal
+#   venv-pascal\Scripts\pip install -r requirements.txt
+#   venv-pascal\Scripts\pip install -r requirements-cuda-pascal.txt
+#   venv-pascal\Scripts\pip install -e .
+#
+# The capped and uncapped cuDNN wheels are both the distribution
+# "nvidia-cudnn-cu12" and CANNOT coexist in one environment — use a
+# separate venv (venv-pascal) for this variant.  Pack-gensrt.ps1
+# -Variant pascal refuses to build unless the active venv's cuDNN is
+# actually a pre-9.12 version.
+#
+# Notes for Pascal machines:
+#   * CTranslate2 runs int8 on these cards (compute capability 6.1 is
+#     exactly where GPU int8 begins; FP16 needs 7.0+).  GenSRT's
+#     compute_type "auto" lands there without configuration.
+#   * NVIDIA's R580 driver branch is the last with Pascal support — the
+#     cards work today, but their driver runway is finite.
+#   * Tesla cards (P4/P40/P100) are passively cooled: desktop installs
+#     need directed airflow for sustained inference.
+
+nvidia-cublas-cu12>=12.4
+nvidia-cudnn-cu12>=9.0,<9.12
+nvidia-cuda-runtime-cu12>=12.4
+
+# NVRTC arrives transitively as a dependency of nvidia-cublas-cu12 (cuBLAS
+# JIT-compiles some kernels through it), so pip installs it whether or not it
+# is listed here.  It is listed anyway, because Pack-gensrt.ps1 has to bundle
+# it explicitly: PyInstaller collects only what it is told to, and a
+# transitive dependency that nobody names is exactly the kind of thing that
+# works in a dev venv and is silently missing from the packaged installer.
+nvidia-cuda-nvrtc-cu12

@@ -17,6 +17,12 @@
 # Requires an NVIDIA driver supporting CUDA 12 on the target machine.
 # CPU-only machines should simply skip this file; GenSRT detects the absence
 # and runs on CPU.
+#
+# PASCAL GPUs (GTX 10-series, Tesla P4/P40/P100): cuDNN dropped compute
+# capability 6.x in 9.12.0, and the pin below resolves to the newest 9.x —
+# so this file does NOT cover Pascal.  Use requirements-cuda-pascal.txt
+# (same libraries, cuDNN capped <9.12) in its own venv, and build that
+# installer with:  .\Pack-gensrt.ps1 -Variant pascal
 
 nvidia-cublas-cu12>=12.4
 nvidia-cudnn-cu12>=9.0,<10

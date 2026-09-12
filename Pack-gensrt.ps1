@@ -3,8 +3,11 @@
 #
 # Run from the GenSRT project root with the venv activated:
 #
-#   .\Pack-gensrt.ps1                    # CUDA build (default)
+#   .\Pack-gensrt.ps1                    # CUDA build (default; Turing and newer)
 #   .\Pack-gensrt.ps1 -Variant cpu       # CPU-only build — much smaller
+#   .\Pack-gensrt.ps1 -Variant pascal    # CUDA build for Pascal GPUs (GTX 10 /
+#                                         # Tesla P4-P40-P100); build it from a
+#                                         # venv holding requirements-cuda-pascal.txt
 #
 # ─────────────────────────────────────────────────────────────────────────
 # Why there are two variants
@@ -32,11 +35,20 @@
 
 [CmdletBinding()]
 param(
-    [ValidateSet("cuda", "cpu")]
+    [ValidateSet("cuda", "cpu", "pascal")]
     [string]$Variant = "cuda"
 )
 
 $ErrorActionPreference = "Stop"
+
+# "pascal" is a CUDA build in every respect except which cuDNN it may ship:
+# cuDNN 9.12.0 dropped Pascal (compute capability 6.x), so the pascal
+# variant must be built from a venv holding a pre-9.12 cuDNN
+# (requirements-cuda-pascal.txt) and the default from one holding 9.12+.
+# The variant IS the cuDNN version — mismatches are refused below, exactly
+# as Tilester''s packager refuses a torch/CUDA-build mismatch.
+$isCuda = ($Variant -ne "cpu")
+$cudaReqFile = if ($Variant -eq "pascal") { "requirements-cuda-pascal.txt" } else { "requirements-cuda.txt" }
 
 Write-Host ""
 Write-Host "========================================" -ForegroundColor Cyan
@@ -61,7 +73,7 @@ if (-not $pyinstallerCheck) {
 # A CUDA build needs the nvidia-* wheels present in the venv, or
 # --collect-all fails partway through a long build.  Check up front.
 
-if ($Variant -eq "cuda") {
+if ($isCuda) {
     Write-Host ""
     Write-Host "Checking CUDA libraries..." -ForegroundColor Yellow
     $missingCuda = @()
@@ -75,10 +87,36 @@ if ($Variant -eq "cuda") {
         Write-Host "ERROR: CUDA build requested but these are not installed:" -ForegroundColor Red
         foreach ($p in $missingCuda) { Write-Host "  - $p" -ForegroundColor Red }
         Write-Host ""
-        Write-Host "Run:  pip install -r requirements-cuda.txt" -ForegroundColor Yellow
+        Write-Host "Run:  pip install -r $cudaReqFile" -ForegroundColor Yellow
         Write-Host "Or build the CPU variant:  .\Pack-gensrt.ps1 -Variant cpu" -ForegroundColor Yellow
         exit 1
     }
+
+    # The variant IS the cuDNN version — refuse to package a mismatch.
+    # (A pascal installer with cuDNN 9.12+ silently loses its entire reason
+    # to exist; a default installer built from the pascal venv ships an old
+    # cuDNN nobody intended.  Both are almost certainly wrong-venv mistakes.)
+    $cudnnVer = (python -m pip show nvidia-cudnn-cu12 2>$null |
+                 Select-String "^Version:").ToString().Split(":")[1].Trim()
+    $cudnnMinor = [int]($cudnnVer.Split(".")[1])
+    $cudnnIsPascalCapable = ([int]($cudnnVer.Split(".")[0]) -eq 9 -and $cudnnMinor -lt 12)
+    if ($Variant -eq "pascal" -and -not $cudnnIsPascalCapable) {
+        Write-Host ""
+        Write-Host "ERROR: variant 'pascal' needs cuDNN < 9.12 (Pascal support was dropped in 9.12.0)," -ForegroundColor Red
+        Write-Host "       but this venv has cuDNN $cudnnVer." -ForegroundColor Red
+        Write-Host "Build from the pascal venv:  venv-pascal\Scripts\Activate.ps1" -ForegroundColor Yellow
+        Write-Host "Or set it up:  python -m venv venv-pascal ; venv-pascal\Scripts\pip install -r requirements.txt -r requirements-cuda-pascal.txt -e ." -ForegroundColor Yellow
+        exit 1
+    }
+    if ($Variant -eq "cuda" -and $cudnnIsPascalCapable) {
+        Write-Host ""
+        Write-Host "ERROR: variant 'cuda' expects cuDNN 9.12+, but this venv has cuDNN $cudnnVer" -ForegroundColor Red
+        Write-Host "       (a Pascal-capped version — this looks like the pascal venv)." -ForegroundColor Red
+        Write-Host "Either activate the default venv, or build what this venv is for:" -ForegroundColor Yellow
+        Write-Host "  .\Pack-gensrt.ps1 -Variant pascal" -ForegroundColor Yellow
+        exit 1
+    }
+    Write-Host "  cuDNN $cudnnVer matches variant '$Variant'" -ForegroundColor Green
 }
 
 # ── Clean previous builds ──────────────────────────────────────────────────
@@ -186,7 +224,7 @@ $pyiArgs = @(
     "--exclude-module", "PIL"
 )
 
-if ($Variant -eq "cuda") {
+if ($isCuda) {
     # CUDA DLLs are added individually rather than with --collect-all, for
     # two reasons.
     #
@@ -214,7 +252,7 @@ if ($Variant -eq "cuda") {
 
     if (-not (Test-Path $nvidiaRoot)) {
         Write-Host "ERROR: $nvidiaRoot not found." -ForegroundColor Red
-        Write-Host "Run:  pip install -r requirements-cuda.txt" -ForegroundColor Yellow
+        Write-Host "Run:  pip install -r $cudaReqFile" -ForegroundColor Yellow
         exit 1
     }
 
@@ -232,7 +270,7 @@ if ($Variant -eq "cuda") {
     foreach ($req in $required) {
         if (-not ($cudaDlls | Where-Object { $_.Name -eq $req })) {
             Write-Host "ERROR: required $req not found under $nvidiaRoot" -ForegroundColor Red
-            Write-Host "Run:  pip install -r requirements-cuda.txt" -ForegroundColor Yellow
+            Write-Host "Run:  pip install -r $cudaReqFile" -ForegroundColor Yellow
             exit 1
         }
     }
@@ -264,7 +302,7 @@ $pyiArgs += "gensrt\__main__.py"
 
 Write-Host ""
 Write-Host "Building executable..." -ForegroundColor Yellow
-if ($Variant -eq "cuda") {
+if ($isCuda) {
     Write-Host "(This will take a few minutes — the cuDNN payload is large)" -ForegroundColor Gray
 } else {
     Write-Host "(CPU build — this should be quick)" -ForegroundColor Gray
@@ -344,7 +382,7 @@ Write-Host "  - dist\gensrt\models\" -ForegroundColor Gray
 # only then fails on every chunk.  Checking the file is present here is far
 # cheaper than discovering it on a user's machine.
 
-if ($Variant -eq "cuda") {
+if ($isCuda) {
     Write-Host ""
     Write-Host "Verifying CUDA payload..." -ForegroundColor Yellow
     $internal = ".\dist\gensrt\_internal"
@@ -383,7 +421,7 @@ Write-Host ""
 Write-Host "Running self-check on the built executable..." -ForegroundColor Yellow
 
 $selfCheckArgs = @("--self-check")
-if ($Variant -eq "cuda") { $selfCheckArgs += "--require-cuda" }
+if ($isCuda) { $selfCheckArgs += "--require-cuda" }
 
 & ".\dist\gensrt\gensrt.exe" @selfCheckArgs
 
@@ -403,6 +441,8 @@ $7zCheck = Get-Command 7z -ErrorAction SilentlyContinue
 if ($7zCheck) {
     if ($Variant -eq "cpu") {
         $installerName = "gensrt-install-cpu.exe"
+    } elseif ($Variant -eq "pascal") {
+        $installerName = "gensrt-install-pascal.exe"
     } else {
         $installerName = "gensrt-install.exe"
     }
@@ -438,9 +478,13 @@ Write-Host ""
 Write-Host "Notes:" -ForegroundColor Yellow
 Write-Host "  - Whisper model (~800MB) downloads on first run to:" -ForegroundColor Gray
 Write-Host "    %USERPROFILE%\.cache\huggingface\hub" -ForegroundColor Gray
-if ($Variant -eq "cuda") {
+if ($isCuda) {
     Write-Host "  - cuBLAS + cuDNN are bundled; an NVIDIA driver supporting" -ForegroundColor Gray
     Write-Host "    CUDA 12 is required on the target machine." -ForegroundColor Gray
+    if ($Variant -eq "pascal") {
+        Write-Host "  - PASCAL build (cuDNN < 9.12): GTX 10-series / Tesla P4-P40-P100." -ForegroundColor Gray
+        Write-Host "    These cards run int8 (no FP16); R580 is their last driver branch." -ForegroundColor Gray
+    }
     Write-Host "  - If CUDA init fails at runtime, GenSRT falls back to CPU" -ForegroundColor Gray
     Write-Host "    with a warning rather than failing the job." -ForegroundColor Gray
 } else {
