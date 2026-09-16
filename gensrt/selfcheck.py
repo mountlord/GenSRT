@@ -272,6 +272,47 @@ def _check_nllb(report: _Report) -> None:
         report.warn(f"NLLB check skipped: {exc}")
 
 
+def _check_ocr(report: _Report) -> None:
+    """Report OCR readiness: packages present, and which models are on disk.
+
+    Absent models are a warn, not a fail: they are 3-11 MB and download on
+    first use. Absent *packages* is also a warn — OCR is an optional
+    convenience in the review player, not part of the transcribe pipeline,
+    so a build without it is degraded rather than broken.
+    """
+    report.section("On-screen text recognition (OCR)")
+    missing = []
+    for module, label in (("onnxruntime", "onnxruntime"),
+                          ("cv2", "opencv"),
+                          ("rapidocr_onnxruntime", "rapidocr-onnxruntime")):
+        try:
+            __import__(module)
+        except ImportError:
+            missing.append(label)
+    if missing:
+        report.warn(
+            f"OCR unavailable — missing: {', '.join(missing)}. "
+            f"Frame text recognition in the review player will be disabled; "
+            f"everything else is unaffected."
+        )
+        return
+    report.ok("OCR packages present (onnxruntime, opencv, rapidocr)")
+
+    try:
+        from gensrt.ocr.factory import available_languages
+
+        present = [lang["code"] for lang in available_languages() if lang["present"]]
+        if present:
+            report.ok(f"OCR models on disk: {', '.join(sorted(present))}")
+        else:
+            report.warn(
+                "No OCR language models downloaded yet. Each is 3-11 MB and "
+                "fetches automatically the first time you read a frame."
+            )
+    except Exception as exc:   # pragma: no cover — defensive
+        report.warn(f"OCR model check skipped: {exc}")
+
+
 def _check_network(report: _Report) -> None:
     """Verify HTTPS to HuggingFace actually works, certificates included.
 
@@ -337,6 +378,7 @@ def run_self_check(*, require_cuda: bool = False) -> int:
     _check_ffmpeg(report)
     _check_cuda(report, required=require_cuda)
     _check_nllb(report)
+    _check_ocr(report)
     _check_network(report)
 
     for line in report.lines:

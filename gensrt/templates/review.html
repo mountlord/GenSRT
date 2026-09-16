@@ -73,6 +73,13 @@
       <div class="links-header">
         <span class="lh-title">SRT Lines</span>
         <span class="lh-count" id="linkCount"></span>
+        <button class="links-action-btn" id="ocrBtn" title="OCR — read on-screen text, from this frame or across the whole video">🔍 OCR ▾</button>
+        <div id="ocrMenu" class="ocr-menu">
+          <button type="button" data-ocr-mode="frame">Read Frame
+            <span>Text on the paused frame → one subtitle line</span></button>
+          <button type="button" data-ocr-mode="extract">Extract Subtitles
+            <span>Burned-in subtitles across the whole video → SRT</span></button>
+        </div>
         <button class="links-action-btn" id="addBtn" title="Add the first SRT line — available only while the list is empty; once lines exist, Split places a new line anywhere, including gaps">＋ Add</button>
         <button class="links-action-btn" id="splitBtn" title="Split SRT line">✂ Split</button>
         <button class="links-action-btn" id="mergeBtn" title="Merge adjacent SRT lines">🔗 Merge</button>
@@ -278,6 +285,139 @@
   </div>
 </div>
 
+<!-- OCR frame-text picker (see ocr.js).  Two panes: everything detected on
+     the left, the lines chosen for the cue on the right.  Composing ONE cue
+     rather than several, because several cues at one timestamp would overlap
+     and the overlap-clamp would then mangle their timing. -->
+<div id="ocrModal" class="modal-overlay ocr-modal">
+  <div class="modal">
+    <div class="modal-header">Read Frame Text</div>
+    <div class="modal-body">
+      <div class="ocr-toolbar">
+        <label>Language
+          <select id="ocrLanguage"></select>
+        </label>
+        <label class="ocr-check">
+          <input type="checkbox" id="ocrTranslate"> Translate
+        </label>
+        <button class="modal-btn" id="ocrRescan">Re-scan frame</button>
+        <span class="ocr-status" id="ocrStatus"></span>
+      </div>
+
+      <div id="ocrFrameView">
+      <div class="ocr-panes">
+        <div class="ocr-pane">
+          <div class="ocr-pane-title">Detected Text</div>
+          <div class="ocr-list" id="ocrDetected"></div>
+        </div>
+        <div class="ocr-actions">
+          <button class="modal-btn" id="ocrAdd">Add &gt;</button>
+          <button class="modal-btn" id="ocrAddAll">All &gt;&gt;</button>
+          <button class="modal-btn" id="ocrRemove">&lt; Remove</button>
+          <button class="modal-btn" id="ocrUp" title="Move up">↑</button>
+          <button class="modal-btn" id="ocrDown" title="Move down">↓</button>
+        </div>
+        <div class="ocr-pane">
+          <div class="ocr-pane-title">Add as Subtitle</div>
+          <div class="ocr-list" id="ocrChosen"></div>
+        </div>
+      </div>
+
+      <div class="ocr-compose">
+        <div class="modal-field">
+          <label>Start (HH:MM:SS.mmm)</label>
+          <input type="text" id="ocrStart" placeholder="00:00:00.000">
+        </div>
+        <div class="modal-field">
+          <label>End (HH:MM:SS.mmm)</label>
+          <input type="text" id="ocrEnd" placeholder="00:00:02.000">
+        </div>
+        <div class="modal-field ocr-text-field">
+          <label>Subtitle text <span class="ocr-lines" id="ocrLineInfo"></span></label>
+          <textarea id="ocrText" rows="3" placeholder="Pick detected lines, or type here"></textarea>
+        </div>
+      </div>
+      </div><!-- /ocrFrameView -->
+
+      <!-- Extract-subtitles view: region + run settings. The region itself is
+           chosen on the video, not here — see startRegionSelection(). -->
+      <div id="ocrExtractView">
+        <div class="ocr-region-row">
+          <div class="ocr-region-preview">
+            <img id="ocrRegionPreview" alt="Selected subtitle region">
+          </div>
+          <div class="ocr-region-meta">
+            <div class="ocr-region-label">Subtitle region</div>
+            <div class="ocr-region-coords" id="ocrRegionCoords">No region selected</div>
+            <button class="modal-btn" id="ocrPickRegion">Select region on video…</button>
+            <div class="ocr-hint">
+              Draw a box around where subtitles appear. Everything outside it is
+              ignored, which is both faster and keeps logos and watermarks out
+              of the results.
+            </div>
+          </div>
+        </div>
+
+        <div class="ocr-settings">
+          <div class="modal-field">
+            <label>Sample rate (frames/sec)</label>
+            <input type="number" id="ocrSampleFps" min="0.5" max="10" step="0.5" value="2">
+            <div class="ocr-hint">Higher gives tighter cue boundaries and more
+              readings to vote on, at proportionally more time.</div>
+          </div>
+          <div class="modal-field">
+            <label>Minimum cue duration (s)</label>
+            <input type="number" id="ocrMinDuration" min="0" max="10" step="0.1" value="0.5">
+            <div class="ocr-hint">Discards flicker from subtitles fading in and out.</div>
+          </div>
+          <div class="modal-field">
+            <label>From (HH:MM:SS.mmm)</label>
+            <input type="text" id="ocrRangeStart" placeholder="00:00:00.000">
+          </div>
+          <div class="modal-field">
+            <label>To (HH:MM:SS.mmm)</label>
+            <input type="text" id="ocrRangeEnd" placeholder="end of video">
+          </div>
+          <div class="modal-field">
+            <label>Treat readings as the same subtitle above</label>
+            <input type="number" id="ocrSimilarity" min="50" max="100" step="5" value="85">
+            <div class="ocr-hint">Percent. OCR rarely reads the same text
+              identically twice; without this, one subtitle becomes several cues.</div>
+          </div>
+          <div class="modal-field">
+            <label>Existing SRT lines</label>
+            <select id="ocrExtractMode">
+              <option value="append">Keep — add extracted cues alongside</option>
+              <option value="replace">Replace with extracted cues</option>
+            </select>
+          </div>
+        </div>
+      </div><!-- /ocrExtractView -->
+    </div>
+    <div class="modal-footer">
+      <button class="modal-btn cancel" id="ocrCancel">Cancel</button>
+      <button class="modal-btn save" id="ocrSave">Add Subtitle</button>
+      <button class="modal-btn save" id="ocrGenerate">Generate</button>
+    </div>
+  </div>
+</div>
+
+<!-- Subtitle-region selector.  Drawn over the video itself rather than in a
+     modal: the user is picking a box on the picture, so the picture has to be
+     unobstructed. -->
+<div id="ocrRegionOverlay">
+  <div class="ocr-region-dim" id="ocrRegionDim"></div>
+  <div class="ocr-region-box" id="ocrRegionBox"></div>
+  <div class="ocr-region-bar">
+    <span id="ocrRegionHint">Drag a box around the subtitle area</span>
+    <span class="ocr-region-size" id="ocrRegionSize"></span>
+    <button class="modal-btn" id="ocrRegionBottom">Bottom band</button>
+    <button class="modal-btn" id="ocrRegionFull">Whole frame</button>
+    <button class="modal-btn cancel" id="ocrRegionCancel">Cancel</button>
+    <button class="modal-btn save" id="ocrRegionUse">Use this region</button>
+  </div>
+</div>
+
 <!-- Split SRT Line Modal -->
 <div id="splitModal" class="modal-overlay">
   <div class="modal">
@@ -429,6 +569,7 @@
 {% include 'js/ui.js' %}
 {% include 'js/player.js' %}
 {% include 'js/chapters.js' %}
+{% include 'js/ocr.js' %}
 {% include 'js/project.js' %}
 {% include 'js/config.js' %}
 {% include 'js/scripts.js' %}

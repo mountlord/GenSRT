@@ -215,6 +215,79 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     # ── VAD ───────────────────────────────────────────────────────────────
+    ext = parser.add_argument_group(
+        "subtitle extraction (OCR)",
+        "Read BURNED-IN subtitles off the picture instead of transcribing "
+        "audio. Unrelated to Whisper; --model and the VAD options do not "
+        "apply.",
+    )
+    ext.add_argument(
+        "--extract-subtitles",
+        dest="extract_subtitles",
+        action="store_true",
+        help="Extract burned-in subtitles from the video by OCR.",
+    )
+    ext.add_argument(
+        "--region",
+        dest="region",
+        default=None,
+        metavar="X,Y,W,H",
+        help="Subtitle area in video pixels, e.g. 40,820,1840,220. Strongly "
+             "recommended: it is faster, and it keeps logos and watermarks "
+             "out of the result. Omit to read the whole frame.",
+    )
+    ext.add_argument(
+        "--ocr-language",
+        dest="ocr_language",
+        default=None,
+        help="Language of the on-screen text (default: the ocr_language "
+             "setting). Chinese is the strongest model in the family; "
+             "Japanese is the weakest.",
+    )
+    ext.add_argument(
+        "--sample-fps",
+        dest="sample_fps",
+        type=float,
+        default=None,
+        help="Frames inspected per second (default: 2). Sets cue-boundary "
+             "precision and how many readings each cue votes with.",
+    )
+    ext.add_argument(
+        "--min-cue-duration",
+        dest="min_cue_duration",
+        type=float,
+        default=None,
+        help="Discard cues shorter than this many seconds (default: 0.5) — "
+             "they are usually fade-in/out artifacts.",
+    )
+    ext.add_argument(
+        "--similarity",
+        dest="similarity",
+        type=float,
+        default=None,
+        help="0-1 (default: 0.85). Two readings this similar are treated as "
+             "the same subtitle. OCR rarely reads identical pixels "
+             "identically; without this one caption becomes several cues.",
+    )
+    ext.add_argument(
+        "--extract-from",
+        dest="extract_from",
+        type=float,
+        default=None,
+        metavar="SECONDS",
+        help="Start of the range to scan (default: 0). Use a short range for "
+             "the first run on a new title — a feature film is thousands of "
+             "samples.",
+    )
+    ext.add_argument(
+        "--extract-to",
+        dest="extract_to",
+        type=float,
+        default=None,
+        metavar="SECONDS",
+        help="End of the range to scan (default: end of video).",
+    )
+
     vad = parser.add_argument_group("voice activity detection")
     vad.add_argument(
         "--no-vad",
@@ -583,6 +656,104 @@ def _run_headless(args: argparse.Namespace) -> int:
 
 # ── Main entry point ───────────────────────────────────────────────────────
 
+def _parse_region(text: str | None) -> tuple[int, int, int, int] | None:
+    """Parse ``X,Y,W,H`` into a region tuple."""
+    if not text:
+        return None
+    parts = [p.strip() for p in str(text).replace(" ", "").split(",")]
+    if len(parts) != 4:
+        raise SystemExit(
+            f"--region needs four comma-separated numbers (X,Y,W,H); got {text!r}"
+        )
+    try:
+        x, y, w, h = (int(round(float(p))) for p in parts)
+    except ValueError:
+        raise SystemExit(f"--region values must be numbers; got {text!r}")
+    return (x, y, w, h)
+
+
+def _run_extract(args) -> int:
+    """``--extract-subtitles``: OCR burned-in subtitles into an SRT.
+
+    Deliberately a separate path from the transcription pipeline. It shares
+    no stage with it — no audio, no Whisper, no VAD — so routing it through
+    run_pipeline would mean threading a mode flag through every stage to
+    have each one skip itself.
+    """
+    import sys
+    from pathlib import Path
+
+    from gensrt.exceptions import ConfigError, GenSRTError
+    from gensrt.ocr.extract import ExtractSettings, extract_subtitles
+    from gensrt.srt.builder import build_srt, write_srt
+
+    # NOTE: the argparse dest for --input is "inputs" (it is repeatable), and
+    # positional inputs have already been merged into it by main().
+    inputs = list(getattr(args, "inputs", None) or [])
+    if len(inputs) != 1:
+        print("--extract-subtitles takes exactly one --input video.",
+              file=sys.stderr)
+        return 2
+    video = Path(inputs[0])
+
+    merged = _resolve_settings(args)
+    settings = ExtractSettings(
+        region=_parse_region(args.region),
+        language=(args.ocr_language or merged.get("ocr_language") or "ja"),
+        sample_fps=args.sample_fps if args.sample_fps is not None else 2.0,
+        start_time=args.extract_from or 0.0,
+        end_time=args.extract_to,
+        min_duration_s=(args.min_cue_duration
+                        if args.min_cue_duration is not None else 0.5),
+        similarity=(args.similarity if args.similarity is not None else 0.85),
+        translate=bool(merged.get("translate", False)),
+        target_language=merged.get("target_language", "en"),
+    )
+
+    out_name = getattr(args, "output_filename", None)
+    out_dir = Path(getattr(args, "output", None) or video.parent)
+    out_path = out_dir / (out_name or (video.stem + ".srt"))
+
+    print("=" * 60, file=sys.stderr)
+    print("  GenSRT — subtitle extraction (OCR)", file=sys.stderr)
+    print(f"  Video  : {video.name}", file=sys.stderr)
+    print(f"  Region : {settings.region or 'whole frame'}", file=sys.stderr)
+    print(f"  OCR    : {settings.language}", file=sys.stderr)
+    print(f"  Sample : {settings.sample_fps} fps", file=sys.stderr)
+    if settings.translate:
+        print(f"  Transl.: → {settings.target_language}", file=sys.stderr)
+    print("=" * 60, file=sys.stderr)
+
+    def _progress(done, total, position, cues):
+        pct = f"{100.0 * done / total:5.1f}%" if total else "  ?  "
+        print(f"\r  {pct}  {position / 60:6.1f} min   {cues} cue(s)",
+              end="", file=sys.stderr, flush=True)
+
+    try:
+        cues = extract_subtitles(video, settings, progress=_progress)
+    except (ConfigError, GenSRTError) as exc:
+        print(f"\nError: {exc}", file=sys.stderr)
+        return 1
+    print("", file=sys.stderr)
+
+    if not cues:
+        print("No subtitles found. Check the region — the most common cause "
+              "is a box that misses the text.", file=sys.stderr)
+        return 1
+
+    subtitles = build_srt(
+        cues,
+        max_duration_s=merged.get("max_subtitle_duration_s", 0) or 0,
+        min_duration_s=0,          # cue timings come from the picture, not a model
+        max_line_chars=merged.get("max_line_chars", 42),
+        max_lines=merged.get("max_lines", 2),
+    )
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    write_srt(subtitles, out_path)
+    print(f"  {len(cues)} cue(s) → {out_path}", file=sys.stderr)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> None:
     """Entry point for the ``gensrt`` command."""
     from gensrt.utils.logging_config import setup_logging
@@ -615,6 +786,9 @@ def main(argv: list[str] | None = None) -> None:
     if getattr(args, "self_check", False):
         from gensrt.selfcheck import run_self_check
         return run_self_check(require_cuda=getattr(args, "require_cuda", False))
+
+    if getattr(args, "extract_subtitles", False):
+        return _run_extract(args)
 
     if args.dump_config:
         from gensrt.exceptions import ConfigError, ConfigParseError

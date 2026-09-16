@@ -7,7 +7,7 @@ from __future__ import annotations
 # metadata, `gensrt --version`, and GET /api/status cannot drift apart.
 #
 # Bump here — and only here — as part of the release ritual.
-__version__ = "1.2.7"
+__version__ = "1.3.0.dev0"
 
 # Register the bundled NVIDIA DLL directories on Windows.  This MUST run
 # before anything imports ctranslate2, because CTranslate2 resolves cuBLAS and

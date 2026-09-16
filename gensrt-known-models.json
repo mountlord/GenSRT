@@ -1,3 +1,5 @@
 {
-  "models": []
+  "models": [
+    "kotoba-tech/kotoba-whisper-v2.0-faster"
+  ]
 }

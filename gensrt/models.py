@@ -200,6 +200,23 @@ class TranscriptionConfig:
     max_chunk_s: float = 6.0
     min_chunk_s: float = 2.0
 
+    # On-screen text recognition (OCR) for paused frames in the review
+    # player. ocr_language selects which recognition model is used — the
+    # detector is language-agnostic and shared. Models are 3-11 MB, Apache
+    # 2.0, downloaded on first use into models/ocr/.
+    # ocr_min_confidence filters weak readings; 0.0 keeps everything and
+    # lets the picker decide, which is right until real-world scores are
+    # better understood.
+    # Which engine translates OCR readings. "auto" prefers an offline
+    # engine when one is configured (as primary or as Google's fallback),
+    # because the picker is interactive: Google's 429 backoff costs ~12s of
+    # spinner before falling back to exactly the engine "auto" would have
+    # picked immediately. Set to "google"/"nllb"/"none" to override.
+    ocr_translation_engine: str = "auto"
+    ocr_language: str = "ja"
+    ocr_min_confidence: float = 0.0
+    ocr_max_regions: int = 40
+
     # Model
     model: str = "large-v3-turbo"
     # "auto" probes the hardware; "cuda" / "cpu" are honoured as explicit

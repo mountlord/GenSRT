@@ -64,6 +64,7 @@ const resetBtn              = document.getElementById('resetBtn');
 const browseBtn             = document.getElementById('browseBtn');
 const saveBtn               = document.getElementById('saveBtn');
 const saveAsBtn             = document.getElementById('saveAsBtn');
+const ocrBtn                = document.getElementById('ocrBtn');
 const addBtn                = document.getElementById('addBtn');
 const splitBtn              = document.getElementById('splitBtn');
 const mergeBtn              = document.getElementById('mergeBtn');

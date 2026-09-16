@@ -19,6 +19,27 @@ srt>=3.5.3
 flask>=3.1.3
 pywebview>=5.3
 tqdm>=4.65.0
+
+# ── On-screen text recognition (OCR) ──────────────────────────────────────
+# Reads text off a paused frame in the review player and offers it as a
+# subtitle cue. Three packages, ~71 MB of wheels:
+#
+#   onnxruntime            runs the detection and recognition models
+#   rapidocr-onnxruntime   PaddleOCR DB detection + its post-processing,
+#                          with the detector model (4.5 MB) inside the wheel
+#   opencv-python          image ops (arrives with rapidocr; named for clarity)
+#
+# CPU deliberately: a paused frame costs a few hundred milliseconds, while
+# onnxruntime-gpu would add ~200 MB and a second consumer of cuDNN, whose
+# version is already pinned differently between the default and Pascal
+# CUDA builds. Recognition models (3-11 MB each, Apache-2.0) download on
+# first use into models/ocr/.
+#
+# rapidocr-onnxruntime is PINNED: its return shape has changed across the
+# 1.x line and the 2.x/3.x packages are a different API entirely.
+onnxruntime>=1.16
+rapidocr-onnxruntime==1.4.4
+opencv-python>=4.5.1.48
 rich>=13.0.0
 
 # Why no torch here

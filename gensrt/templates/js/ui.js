@@ -167,3 +167,82 @@ function showStyledConfirm(title, htmlMessage) {
 function showConfirmDialog(message, callback) {
   if (confirm(message)) callback();
 }
+
+// ── Draggable modals ──────────────────────────────────────
+//
+// Modals are centred by flex on their overlay, which is fine until the modal
+// covers the thing you are trying to look at — choosing OCR regions means
+// wanting to see the video frame behind the picker.
+//
+// Dragging uses left/top offsets rather than a CSS transform on purpose:
+// .modal already animates transform (modalSlideIn), and a transform written
+// by script fights that animation for the first 300 ms.  Offsets are
+// animation-neutral.
+//
+// Only the header drags, so text selection inside inputs and textareas is
+// untouched.
+function makeModalDraggable(modal) {
+  const header = modal.querySelector('.modal-header');
+  if (!header || header.dataset.draggable === '1') return;
+  header.dataset.draggable = '1';
+  header.style.cursor = 'move';
+  header.title = 'Drag to move';
+
+  let startX = 0, startY = 0, baseX = 0, baseY = 0, dragging = false;
+
+  const clampIntoView = () => {
+    // Keep at least a corner reachable after a window resize, otherwise a
+    // modal dragged to an edge can end up unreachable.
+    const r = modal.getBoundingClientRect();
+    let dx = parseFloat(modal.style.left || '0');
+    let dy = parseFloat(modal.style.top  || '0');
+    if (r.right  < 80)                  dx += 80 - r.right;
+    if (r.left   > window.innerWidth  - 80) dx -= r.left - (window.innerWidth - 80);
+    if (r.bottom < 40)                  dy += 40 - r.bottom;
+    if (r.top    > window.innerHeight - 40) dy -= r.top - (window.innerHeight - 40);
+    modal.style.left = `${dx}px`;
+    modal.style.top  = `${dy}px`;
+  };
+
+  const onMove = (e) => {
+    if (!dragging) return;
+    modal.style.left = `${baseX + (e.clientX - startX)}px`;
+    modal.style.top  = `${baseY + (e.clientY - startY)}px`;
+  };
+
+  const onUp = () => {
+    if (!dragging) return;
+    dragging = false;
+    modal.classList.remove('dragging');
+    document.removeEventListener('mousemove', onMove);
+    document.removeEventListener('mouseup', onUp);
+    clampIntoView();
+  };
+
+  header.addEventListener('mousedown', (e) => {
+    if (e.button !== 0) return;
+    dragging = true;
+    startX = e.clientX;
+    startY = e.clientY;
+    baseX  = parseFloat(modal.style.left || '0');
+    baseY  = parseFloat(modal.style.top  || '0');
+    modal.classList.add('dragging');
+    modal.style.position = 'relative';
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+    e.preventDefault();          // no text-selection drag on the title
+  });
+
+  // Double-clicking the header re-centres — the escape hatch for a modal
+  // dragged somewhere awkward.
+  header.addEventListener('dblclick', () => {
+    modal.style.left = '0px';
+    modal.style.top  = '0px';
+  });
+
+  window.addEventListener('resize', clampIntoView);
+}
+
+function initDraggableModals() {
+  document.querySelectorAll('.modal-overlay .modal').forEach(makeModalDraggable);
+}

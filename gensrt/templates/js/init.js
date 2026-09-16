@@ -88,6 +88,10 @@ if (burnBtn) {
   });
 }
 
+// ── Draggable modals ──────────────────────────────────────
+// Every modal gets a draggable header; see makeModalDraggable in ui.js.
+if (typeof initDraggableModals === 'function') initDraggableModals();
+
 // ── Save The Children ─────────────────────────────────────
 const stcBtn = document.getElementById('stcBtn');
 if (stcBtn) {

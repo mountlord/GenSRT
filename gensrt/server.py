@@ -1562,6 +1562,195 @@ def api_burn():
     })
 
 
+# ── OCR translation: cached engine, interactive-latency policy ────────────
+#
+# Two things separate OCR translation from pipeline translation, and both
+# argue against reusing the pipeline's engine choice verbatim:
+#
+# 1. SOMEONE IS WAITING.  The pipeline translates unattended, so v1.2.7's
+#    long 429 backoff (2s then 8s) is a good trade: wait out a transient
+#    throttle rather than degrade quality. In the picker that same ladder is
+#    ~12 seconds of spinner before a fallback that was going to run anyway.
+#
+# 2. IT IS A HANDFUL OF SHORT STRINGS.  Six subtitle fragments do not need
+#    the best available translator badly enough to pay a round trip for.
+#
+# So "auto" prefers an already-configured OFFLINE engine when there is one,
+# and only falls through to Google when there is nothing local to use.
+# Setting ocr_translation_engine explicitly overrides all of this.
+_ocr_translator_cache: dict = {}
+_ocr_translator_lock = threading.Lock()
+
+
+def _resolve_ocr_engine_key(cfg: dict) -> str:
+    """Which translation engine the picker should use."""
+    key = str(cfg.get("ocr_translation_engine") or "auto").strip().lower()
+    if key and key != "auto":
+        return key
+
+    primary = str(cfg.get("translation_engine") or "google").strip().lower()
+    if primary != "google":
+        return primary          # already offline, or "none"
+
+    # Google is primary. If an offline fallback is configured, it is going to
+    # handle this request anyway the moment Google 429s — so go straight
+    # there and skip the ladder.
+    fallback = str(cfg.get("translation_fallback") or "").strip().lower()
+    if fallback == "nllb":
+        return "nllb"
+    return primary
+
+
+def _get_ocr_translator(cfg: dict, key: str):
+    """Build the picker's translation engine once and keep it.
+
+    Without this the NLLB model was pushed to the GPU on every single
+    request — 2-3 seconds each time, for a model that was already resident
+    a moment earlier. Keyed on the settings that shape the engine, so a
+    config change produces a new entry rather than a stale one.
+    """
+    from gensrt.models import TranscriptionConfig
+    from gensrt.translation.factory import get_engine
+
+    cache_key = (
+        key,
+        str(cfg.get("translation_fallback") or ""),
+        str(cfg.get("translation_model") or ""),
+        str(cfg.get("device") or ""),
+    )
+    with _ocr_translator_lock:
+        engine = _ocr_translator_cache.get(cache_key)
+        if engine is not None:
+            return engine
+
+    tconf = TranscriptionConfig(**{
+        k: v for k, v in cfg.items()
+        if k in TranscriptionConfig.__dataclass_fields__
+    })
+    engine = get_engine(key, tconf)
+    with _ocr_translator_lock:
+        _ocr_translator_cache[cache_key] = engine
+    return engine
+
+
+@app.route("/api/ocr/languages")
+def api_ocr_languages():
+    """Registry of OCR languages, with which models are already on disk.
+
+    Returns:
+      200 ``{"languages": [{"code","label","size_mb","present","note"}, ...],
+             "default": "ja"}``
+    """
+    try:
+        from gensrt.ocr.factory import DEFAULT_OCR_LANGUAGE, available_languages
+
+        return jsonify({
+            "languages": available_languages(),
+            "default": DEFAULT_OCR_LANGUAGE,
+        })
+    except Exception as exc:      # OCR deps absent in a stripped build
+        return jsonify({"error": str(exc), "languages": []}), 500
+
+
+@app.route("/api/ocr", methods=["POST"])
+def api_ocr():
+    """Read on-screen text from a single frame.
+
+    The frame arrives as a data URL captured from the paused ``<video>``
+    element by the client. Sending pixels rather than a timestamp is
+    deliberate: the browser already holds the decoded frame, so this needs
+    no re-seek and no second decode, and what gets read is exactly what the
+    user is looking at.
+
+    Body (JSON):
+      ``image``     data URL ("data:image/png;base64,...") — required.
+      ``language``  ISO 639-1; defaults to the configured ocr_language.
+      ``translate`` bool; also translate each reading to target_language.
+
+    Returns:
+      200 ``{"language": "ja", "regions": [{index, quad, bbox, text,
+            confidence, crop, translation?}, ...]}``
+      400 on a malformed body, 422 when the language has no model,
+      500 on a missing dependency or a failed model download.
+    """
+    import base64
+
+    body = request.get_json(silent=True) or {}
+    data_url = (body.get("image") or "").strip()
+    if not data_url:
+        return jsonify({"error": "image (data URL) required"}), 400
+
+    # Accept a bare base64 payload too, so a non-browser caller need not
+    # synthesise the data-URL prefix.
+    payload = data_url.split(",", 1)[1] if data_url.startswith("data:") else data_url
+    try:
+        raw = base64.b64decode(payload, validate=True)
+    except Exception:
+        return jsonify({"error": "image is not valid base64"}), 400
+    if not raw:
+        return jsonify({"error": "image is empty"}), 400
+
+    from gensrt.config import BUILTIN_DEFAULTS
+    try:
+        cfg = {**BUILTIN_DEFAULTS, **read_config_file(default_if_missing=True)}
+    except Exception:
+        cfg = dict(BUILTIN_DEFAULTS)
+    language = (body.get("language") or cfg.get("ocr_language") or "ja").strip().lower()
+
+    try:
+        import cv2
+        import numpy as np
+    except ImportError as exc:
+        return jsonify({
+            "error": f"OCR needs opencv and numpy, which are not installed: {exc}"
+        }), 500
+
+    frame = cv2.imdecode(np.frombuffer(raw, dtype=np.uint8), cv2.IMREAD_COLOR)
+    if frame is None:
+        return jsonify({"error": "could not decode the supplied image"}), 400
+
+    from gensrt.exceptions import ConfigError
+
+    try:
+        from gensrt.ocr import read_frame
+
+        regions = read_frame(
+            frame,
+            language,
+            max_regions=int(cfg.get("ocr_max_regions", 40) or 40),
+            min_confidence=float(cfg.get("ocr_min_confidence", 0.0) or 0.0),
+        )
+    except ConfigError as exc:
+        # Unknown language is the caller's mistake, not a server fault.
+        return jsonify({"error": str(exc)}), 422
+    except Exception as exc:
+        logger.exception("OCR failed")
+        return jsonify({"error": str(exc)}), 500
+
+    payload_regions = [r.to_dict() for r in regions]
+
+    # Optional translation, reusing whatever engine the run is configured
+    # for. Failure here must not lose the OCR result: the source text is
+    # still useful, and the picker shows both.
+    if body.get("translate") and payload_regions:
+        target = (body.get("target_language")
+                  or cfg.get("target_language") or "en").strip().lower()
+        try:
+            engine_key = _resolve_ocr_engine_key(cfg)
+            engine = _get_ocr_translator(cfg, engine_key)
+            texts = [r["text"] for r in payload_regions]
+            for region, translated in zip(
+                payload_regions, engine.translate_batch(texts, language, target)
+            ):
+                region["translation"] = translated
+        except Exception as exc:
+            logger.warning("OCR translation failed: %s", exc)
+            for region in payload_regions:
+                region["translation_error"] = str(exc)
+
+    return jsonify({"language": language, "regions": payload_regions})
+
+
 @app.route("/api/media")
 def api_media():
     """Serve local media files by absolute path with HTTP Range support.

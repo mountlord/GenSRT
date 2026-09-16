@@ -30,6 +30,7 @@ if (browseBtn) {
 }
 
 // ── Panel Header Action Listeners ────────────────────────
+if (ocrBtn)    ocrBtn.addEventListener('click',    (e) => { e.preventDefault(); e.stopPropagation(); _ocrToggleMenu(); });
 if (addBtn)    addBtn.addEventListener('click',    (e) => { e.preventDefault(); addFirstSegment(); });
 if (splitBtn)  splitBtn.addEventListener('click',  (e) => { e.preventDefault(); splitSegmentAtPlayhead(); });
 if (mergeBtn)  mergeBtn.addEventListener('click',  (e) => { e.preventDefault(); mergeAdjacentSegments(); });

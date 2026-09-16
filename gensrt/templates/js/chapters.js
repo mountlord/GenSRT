@@ -387,6 +387,12 @@ function _updateSrtLineButtons() {
   if (typeof addBtn !== 'undefined' && addBtn) {
     addBtn.disabled = !!(chaptersArr && chaptersArr.length);
   }
+  // OCR reads the frame currently on screen, so its gate is "is there a
+  // frame", not "is the list empty" — it inserts at the playhead wherever
+  // that falls, including into a populated list.
+  if (typeof ocrBtn !== 'undefined' && ocrBtn) {
+    ocrBtn.disabled = !(typeof player !== 'undefined' && player && player.videoWidth);
+  }
 }
 
 function addFirstSegment() {
