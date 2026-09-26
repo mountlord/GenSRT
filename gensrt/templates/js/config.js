@@ -108,26 +108,52 @@ const configSchema = {
     },
     'translation_engine': {
       type: 'select',
-      options: ['google', 'nllb', 'none'],
+      options: ['google', 'nllb', 'madlad', 'none'],
       hint: 'Default translation backend.  google needs a network connection; ' +
-            'nllb runs fully offline on this machine (one-time ~650 MB model ' +
-            'download; the NLLB model weights are CC-BY-NC-4.0 — ' +
-            'non-commercial use only, see README); none skips translation.',
+            'nllb runs fully offline (one-time ~650 MB download; weights are ' +
+            'CC-BY-NC-4.0 — non-commercial only, see README); madlad also runs ' +
+            'offline and is Apache-2.0 (commercial use fine) but is ~2.9 GB ' +
+            'and about twice as slow per cue; none skips translation.',
     },
     'translation_fallback': {
       type: 'select',
-      options: ['nllb', 'mymemory', 'none'],
+      options: ['nllb', 'madlad', 'mymemory', 'none'],
       hint: 'What to do when a Google batch fails (e.g. rate limiting). ' +
             'nllb translates the failed batch offline (non-commercial ' +
             'license, see README); mymemory is the old low-quality web ' +
             'fallback; none keeps the source text.  Only applies when the ' +
             'engine is google.',
     },
+    // Model pickers rather than blank text boxes. An empty text field posted
+    // "" and was rejected as "must be a non-empty string", which left
+    // hand-editing gensrt-config.json as the only way to set these.
+    //
+    // The lists hold conversions that have actually been run, not every repo
+    // that exists — a wrong repo ID here costs a failed multi-GB download.
+    // A value already in your config that is not listed is preserved and
+    // shown (see the select renderer), so a custom conversion still works.
     'translation_model': {
-      type: 'text',
-      hint: 'NLLB model for the nllb engine/fallback: a HuggingFace repo ID ' +
-            '(downloaded once into models/), a folder name under models/, ' +
-            'or a full path.',
+      type: 'select',
+      options: [
+        'mijuanlo/nllb-200-distilled-600M-ct2-int8',
+      ],
+      hint: 'NLLB model for the nllb engine/fallback (~651 MB, downloaded ' +
+            'once into models/). A folder name under models/ or a full path ' +
+            'also works — set it in gensrt-config.json and it will appear ' +
+            'here.',
+    },
+    'madlad_model': {
+      type: 'select',
+      options: [
+        'olob0/madlad400-3b-mt-ct2-int8_float16',
+        'Nextcloud-AI/madlad400-3b-mt-ct2-int8',
+        'santhosh/madlad400-3b-ct2',
+      ],
+      hint: 'MADLAD model for the madlad engine/fallback (~2.9 GB). The ' +
+            'first entry is the int8_float16 conversion; the others are ' +
+            'alternative exports of the same weights. Kept separate from ' +
+            'translation_model so switching engines does not point one at ' +
+            'the other\'s model.',
     },
     'target_language': {
       type: 'select',
@@ -243,7 +269,16 @@ function renderConfigEditor(config) {
         input             = document.createElement('select');
         input.className   = 'config-field-input';
         input.dataset.key = fieldKey;
-        fieldDef.options.forEach(opt => {
+        // A value already in the config that is not among the listed options
+        // (a custom model directory, a conversion we do not ship in the list)
+        // is added and selected, so opening Config never silently replaces
+        // the user's own setting with the first option.
+        const opts = fieldDef.options.slice();
+        if (typeof fieldValue === 'string' && fieldValue &&
+            !opts.includes(fieldValue)) {
+          opts.unshift(fieldValue);
+        }
+        opts.forEach(opt => {
           const option      = document.createElement('option');
           option.value      = opt;
           option.textContent = opt;

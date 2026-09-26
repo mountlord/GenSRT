@@ -282,9 +282,17 @@ def _check_ocr(report: _Report) -> None:
     """
     report.section("On-screen text recognition (OCR)")
     missing = []
+    # shapely, pyclipper and PIL are imported AT MODULE LEVEL by rapidocr's
+    # detection post-processing and image loading. They are easy to lose in a
+    # packaged build — PIL especially, which was on the PyInstaller exclude
+    # list until OCR needed it — so they are checked by name rather than left
+    # to surface as a ModuleNotFoundError on the first frame read.
     for module, label in (("onnxruntime", "onnxruntime"),
                           ("cv2", "opencv"),
-                          ("rapidocr_onnxruntime", "rapidocr-onnxruntime")):
+                          ("rapidocr_onnxruntime", "rapidocr-onnxruntime"),
+                          ("shapely", "shapely"),
+                          ("pyclipper", "pyclipper"),
+                          ("PIL", "Pillow")):
         try:
             __import__(module)
         except ImportError:
@@ -296,7 +304,35 @@ def _check_ocr(report: _Report) -> None:
             f"everything else is unaffected."
         )
         return
-    report.ok("OCR packages present (onnxruntime, opencv, rapidocr)")
+    report.ok("OCR packages present (onnxruntime, opencv, rapidocr, "
+              "shapely, pyclipper, Pillow)")
+
+    # The detection model ships INSIDE the rapidocr wheel as package data.
+    # PyInstaller copies code, not data, so a build missing the collect step
+    # imports every package above cleanly and then fails at the first
+    # detect(). Checking the file is what distinguishes a working packaged
+    # build from one that only looks working.
+    try:
+        import rapidocr_onnxruntime as _rapidocr
+
+        pkg_dir = Path(_rapidocr.__file__).parent
+        det_model = pkg_dir / "models" / "ch_PP-OCRv4_det_infer.onnx"
+        config = pkg_dir / "config.yaml"
+        if det_model.is_file() and config.is_file():
+            report.ok(
+                f"Bundled detection model present "
+                f"({det_model.stat().st_size / 1e6:.1f} MB)"
+            )
+        else:
+            absent = [p.name for p in (det_model, config) if not p.is_file()]
+            report.fail(
+                f"rapidocr imports but its bundled data is missing: "
+                f"{', '.join(absent)}. Text detection will fail. In a "
+                f"packaged build this means the collect step for "
+                f"rapidocr_onnxruntime did not run."
+            )
+    except Exception as exc:   # pragma: no cover — defensive
+        report.warn(f"Bundled detection model check skipped: {exc}")
 
     try:
         from gensrt.ocr.factory import available_languages

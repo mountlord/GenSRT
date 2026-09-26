@@ -71,6 +71,7 @@ updateButtonStates();
 const ENGINE_LABELS = {
   google:      'Google (GTX)',
   nllb:        'NLLB (offline)',
+  madlad:      'MADLAD-400 (offline)',
   passthrough: 'None (skip translation)',
   none:        'None (skip translation)',
 };

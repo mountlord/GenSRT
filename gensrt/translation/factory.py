@@ -15,6 +15,13 @@ Engines
     ~650 MB model download, any of the mapped languages in either
     direction, GPU-accelerated.  The *weights* are CC-BY-NC-4.0
     (non-commercial only) — see :mod:`gensrt.translation.nllb_ct2`.
+``madlad``
+    MADLAD-400 on CTranslate2.  Also fully offline, also GPU-accelerated,
+    and **Apache-2.0** — so it carries no commercial restriction.  The
+    trade is size and speed: ~2.9 GB against NLLB's 650 MB, and roughly
+    twice the per-cue cost.  Which one reads better is a judgement about
+    the user's own material, so GenSRT offers both rather than choosing.
+    See :mod:`gensrt.translation.madlad_ct2`.
 ``none``
     Transcribe without translating.
 
@@ -44,10 +51,10 @@ from gensrt.translation.base import PassthroughEngine, TranslationEngine
 logger = logging.getLogger(__name__)
 
 #: Valid values for ``translation_engine``.
-ENGINE_KEYS = ("google", "nllb", "none")
+ENGINE_KEYS = ("google", "nllb", "madlad", "none")
 
 #: Valid values for ``translation_fallback`` (Google batch-failure handling).
-FALLBACK_KEYS = ("nllb", "mymemory", "none")
+FALLBACK_KEYS = ("nllb", "madlad", "mymemory", "none")
 
 # Engines that used to exist. Recognised solely so that a config file left
 # over from an earlier version produces an explanation rather than a bare
@@ -82,6 +89,11 @@ def get_engine(key: str, config=None) -> TranslationEngine:
         from gensrt.translation.nllb_ct2 import NLLBCT2Engine
 
         engine = NLLBCT2Engine(config)
+
+    elif k == "madlad":
+        from gensrt.translation.madlad_ct2 import MADLADCT2Engine
+
+        engine = MADLADCT2Engine(config)
 
     elif k == "google":
         from gensrt.translation.google_gtx import GoogleGTXEngine

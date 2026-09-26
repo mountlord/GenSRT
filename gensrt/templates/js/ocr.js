@@ -92,8 +92,8 @@ async function _ocrScan() {
       body:    JSON.stringify({ image, language, translate,
                                 target_language: _ocrTargetLanguage() }),
     });
-    const data = await res.json();
-    if (!res.ok) {
+    const data = await _ocrJson(res);
+    if (!res.ok || data._nonJson) {
       // 422 is "you picked a language with no model" — the user's choice to
       // fix.  Anything else is ours.
       _ocrSetStatus(data.error || `OCR failed (HTTP ${res.status})`, true);
@@ -417,9 +417,19 @@ function _ocrSave() {
     if (el) el.addEventListener(event, handler);
   };
 
-  on('ocrCancel', 'click', () => modal.classList.remove('visible'));
+  on('ocrCancel', 'click', () => {
+    if (_ocrExtractRunning) {
+      // Stop the run rather than closing over the top of it.
+      fetch('/api/ocr/extract/cancel', { method: 'POST' }).catch(() => {});
+      _ocrSetStatus('Stopping — keeping the cues found so far…');
+      return;
+    }
+    modal.classList.remove('visible');
+  });
   modal.addEventListener('click', e => {
-    if (e.target === modal) modal.classList.remove('visible');
+    if (e.target === modal && !_ocrExtractRunning) {
+      modal.classList.remove('visible');
+    }
   });
   on('ocrSave',   'click', _ocrSave);
   on('ocrRescan', 'click', _ocrScan);
@@ -701,6 +711,151 @@ function _ocrExtractRequest() {
   };
 }
 
+// ── Running an extraction ─────────────────────────────────────────────────
+//
+// One POST that stays open for the whole run, with progress read from
+// /api/operation_status — the same shape transcription uses. A feature film
+// at 2 fps is tens of thousands of samples, so this can run for a long time;
+// Cancel asks the server to stop and keep the cues found so far.
+
+// Parse a response that SHOULD be JSON, and report it usefully when it is
+// not. A Flask HTML error page parsed as JSON throws "Unexpected token '<'",
+// which is true and tells you nothing — the status code is what identifies
+// the problem (404: route missing from this build; 500: it ran and crashed).
+async function _ocrJson(res) {
+  const body = await res.text();
+  try {
+    return JSON.parse(body);
+  } catch {
+    const snippet = body.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+    return {
+      error: `The server returned ${res.status} ${res.statusText} instead of ` +
+             `JSON` + (snippet ? `: ${snippet.slice(0, 160)}` : '.') +
+             (res.status === 404
+               ? '  This endpoint is missing from the running build — the ' +
+                 'installed version is probably older than the interface.'
+               : ''),
+      _nonJson: true,
+    };
+  }
+}
+
+let _ocrExtractPolling = null;
+let _ocrExtractRunning = false;
+
+function _ocrPollProgress() {
+  _ocrExtractPolling = setInterval(async () => {
+    try {
+      const data = await (await fetch('/api/operation_status')).json();
+      if (data.status !== 'active' || !data.operation) return;
+      const op = data.operation;
+      const pct = (op.percent || 0).toFixed(0);
+      _ocrSetStatus(`${pct}% — ${op.message || 'working…'}`);
+    } catch { /* a dropped poll is not worth reporting */ }
+  }, 1000);
+}
+
+function _ocrStopPolling() {
+  if (_ocrExtractPolling) clearInterval(_ocrExtractPolling);
+  _ocrExtractPolling = null;
+}
+
+function _ocrSetExtractRunning(running) {
+  _ocrExtractRunning = running;
+  const gen = document.getElementById('ocrGenerate');
+  const cancel = document.getElementById('ocrCancel');
+  if (gen) {
+    gen.disabled = running;
+    gen.textContent = running ? 'Extracting…' : 'Generate';
+  }
+  // Cancel becomes a stop button during a run: closing the modal would
+  // otherwise leave the extraction going with nothing watching it.
+  if (cancel) cancel.textContent = running ? 'Stop' : 'Cancel';
+  ['ocrPickRegion', 'ocrSampleFps', 'ocrMinDuration', 'ocrRangeStart',
+   'ocrRangeEnd', 'ocrSimilarity', 'ocrExtractMode', 'ocrLanguage',
+   'ocrTranslate'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.disabled = running;
+  });
+}
+
+function _ocrApplyExtractedCues(cues, mode) {
+  const proj = _ensureEditableProject();
+  const segments = (mode === 'replace') ? [] : proj.segments;
+
+  for (const cue of cues) {
+    const seg = {
+      index:      0,
+      start_time: Number(cue.start),
+      end_time:   Number(cue.end),
+      text:       cue.text,
+      has_seams:  false,
+      seam_count: 0,
+      manual:     true,
+      source:     'ocr-extract',
+    };
+    if (fps && isFinite(fps)) {
+      seg.start_frame = frameAtTime(seg.start_time);
+      seg.end_frame   = frameAtTime(seg.end_time);
+    }
+    segments.push(seg);
+  }
+
+  // Sorts by start_time, so extracted cues interleave correctly with any
+  // existing ones rather than being appended at the end.
+  _reindexSegments(segments);
+  proj.segments       = segments;
+  proj.schema_version = 1;
+  if (!proj.fps && fps) proj.fps = fps;
+
+  linksData = proj;
+  renderLinks(proj);
+  if (typeof updateButtonStates === 'function') updateButtonStates();
+}
+
+async function _ocrRunExtract(req) {
+  _ocrSetExtractRunning(true);
+  _ocrSetStatus('Starting extraction…');
+  _ocrPollProgress();
+  try {
+    const res = await fetch('/api/ocr/extract', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify(req),
+    });
+    const data = await _ocrJson(res);
+    if (!res.ok || data._nonJson) {
+      _ocrSetStatus(data.error || `Extraction failed (HTTP ${res.status})`, true);
+      showErrorDialog('Extraction Failed', _escapeHtml(data.error ||
+        `The server returned HTTP ${res.status}.`));
+      return;
+    }
+
+    const cues = data.cues || [];
+    if (!cues.length) {
+      _ocrSetStatus('No subtitles found in the selected region.', true);
+      showErrorDialog('Nothing Found',
+        'No readable text was found in that region. Check the box covers ' +
+        'the subtitles, and that the language matches the script on screen.');
+      return;
+    }
+
+    _ocrApplyExtractedCues(cues, data.existing);
+    _ocrSetStatus(`${cues.length} cue(s) added${data.cancelled ? ' (stopped early)' : ''}.`);
+    document.getElementById('ocrModal').classList.remove('visible');
+    if (data.cancelled) {
+      showErrorDialog('Stopped',
+        `Extraction was stopped early. The ${cues.length} cue(s) found ` +
+        `before stopping have been added.`);
+    }
+  } catch (err) {
+    _ocrSetStatus(`Extraction request failed: ${err}`, true);
+  } finally {
+    _ocrStopPolling();
+    _ocrSetExtractRunning(false);
+  }
+}
+
 function _ocrGenerate() {
   if (!_ocrRegion) {
     showErrorDialog('Extract Subtitles',
@@ -718,23 +873,19 @@ function _ocrGenerate() {
     return;
   }
 
-  // Backend not built yet. Showing the assembled request is more useful than
-  // a disabled button: it makes the contract inspectable, and it verifies the
-  // UI produces sane values before anything consumes them.
   const samples = Math.round(
     ((req.end_time ?? 0) - req.start_time) * req.sample_fps);
-  console.log('[ocr:extract] request', req);
-  showErrorDialog('Not Built Yet',
-    `The extraction backend is not implemented yet — this is the request the ` +
-    `UI would send:<br><br>` +
-    `<span style="font-family: var(--font-mono); font-size: 12px;">` +
-    `region ${req.region.w}×${req.region.h} at (${req.region.x}, ${req.region.y})<br>` +
-    `language ${req.language}${req.translate ? ' → ' + req.target_language : ''}<br>` +
-    `${req.sample_fps} fps over ${fmtTime(req.start_time)}–${fmtTime(req.end_time ?? 0)} ` +
-    `(~${samples.toLocaleString()} samples)<br>` +
-    `min cue ${req.min_duration_s}s, similarity ${Math.round(req.similarity * 100)}%<br>` +
-    `existing lines: ${req.existing}</span><br><br>` +
-    `The full object is in the browser console.`);
+  // A long run deserves a heads-up rather than a silently frozen dialog.
+  if (samples > 20000) {
+    const minutes = Math.round(samples / 2000);
+    if (!confirm(
+        `This range is about ${samples.toLocaleString()} samples and could ` +
+        `take well over ${minutes} minutes.\n\nConsider setting a shorter ` +
+        `From/To range first to check the region is right.\n\nStart anyway?`)) {
+      return;
+    }
+  }
+  _ocrRunExtract(req);
 }
 
 // ── Wiring (mode menu, region, generate) ──────────────────────────────────

@@ -86,7 +86,7 @@ OCR_LANGUAGES: dict[str, _Lang] = {
 DEFAULT_OCR_LANGUAGE = "ja"
 
 _detector_lock = threading.Lock()
-_detector: TextDetector | None = None
+_detectors: dict[tuple, TextDetector] = {}
 _recognizers: dict[str, TextRecognizer] = {}
 
 
@@ -185,14 +185,27 @@ def ensure_model(code: str, *, status=None) -> Path:
     return target
 
 
-def get_detector() -> TextDetector:
-    """The shared, language-agnostic text detector (constructed once)."""
-    global _detector
-    if _detector is None:
-        with _detector_lock:
-            if _detector is None:
-                _detector = PPOCRDetector()
-    return _detector
+def get_detector(limit_side_len: int | None = None,
+                 limit_type: str | None = None) -> TextDetector:
+    """The shared, language-agnostic text detector.
+
+    Cached per setting: an ONNX session costs more to build than to run, and
+    both the paused-frame reader and the extraction engine call this
+    repeatedly. Keyed on the resize settings so a config change produces a
+    new detector rather than silently reusing the old one.
+    """
+    from gensrt.ocr.ppocr_onnx import (
+        DEFAULT_DET_LIMIT_SIDE_LEN, DEFAULT_DET_LIMIT_TYPE,
+    )
+
+    key = (int(limit_side_len or DEFAULT_DET_LIMIT_SIDE_LEN),
+           (limit_type or DEFAULT_DET_LIMIT_TYPE).lower())
+    with _detector_lock:
+        cached = _detectors.get(key)
+        if cached is None:
+            cached = PPOCRDetector(limit_side_len=key[0], limit_type=key[1])
+            _detectors[key] = cached
+    return cached
 
 
 def get_recognizer(code: str, *, status=None) -> TextRecognizer:

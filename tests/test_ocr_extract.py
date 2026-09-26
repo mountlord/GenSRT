@@ -22,6 +22,8 @@ What these tests pin, in rough order of how badly each hurts when it breaks:
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from gensrt.exceptions import ConfigError
@@ -194,7 +196,7 @@ def _run(monkeypatch, script, **settings_kwargs):
         name = "fake"
         detect = staticmethod(_detect)
 
-    monkeypatch.setattr("gensrt.ocr.factory.get_detector", lambda: _Det())
+    monkeypatch.setattr("gensrt.ocr.factory.get_detector", lambda **_kw: _Det())
     monkeypatch.setattr("gensrt.ocr.factory.get_recognizer",
                         lambda code, status=None: ocr)
     monkeypatch.setattr("gensrt.ocr.ppocr_onnx.crop_region", _crop)
@@ -209,9 +211,10 @@ def _run(monkeypatch, script, **settings_kwargs):
                         lambda *a, **k: _FakeProc(payload))
     monkeypatch.setattr("pathlib.Path.is_file", lambda self: True)
 
+    should_cancel = settings_kwargs.pop("should_cancel", None)
     settings_kwargs.setdefault("min_duration_s", 0.0)
     settings = ExtractSettings(sample_fps=2.0, **settings_kwargs)
-    return extract_subtitles("fake.mp4", settings)
+    return extract_subtitles("fake.mp4", settings, should_cancel=should_cancel)
 
 
 class _TaggedArray(np.ndarray):
@@ -415,7 +418,7 @@ def _patch_probe(monkeypatch, width=1920, height=1080, duration=300.0,
     if allow_models:
         monkeypatch.setattr("gensrt.ocr.factory.get_recognizer",
                             lambda code, status=None: object())
-        monkeypatch.setattr("gensrt.ocr.factory.get_detector", lambda: object())
+        monkeypatch.setattr("gensrt.ocr.factory.get_detector", lambda **_kw: object())
     else:
         def _must_not_load(*_a, **_k):
             raise AssertionError(
@@ -557,3 +560,103 @@ def test_partial_translation_warns(monkeypatch, caplog):
         _translate_cues(cues, ExtractSettings(language="zh"))
     assert [c.text for c in cues] == ["ok", "b", "c"]
     assert any("Translated 1 of 3" in r.message for r in caplog.records)
+
+
+# ── Cancellation ──────────────────────────────────────────────────────────
+#
+# A feature film at 2 fps is tens of thousands of samples. Stopping has to
+# keep the work already done: discarding an hour of completed extraction
+# because the user changed their mind would be worse than a partial answer.
+
+def test_cancel_keeps_the_cues_found_so_far(monkeypatch):
+    calls = {"n": 0}
+
+    def _cancel_after_a_while():
+        calls["n"] += 1
+        return calls["n"] > 1        # checked every 10 frames
+
+    script = [["first"]] * 12 + [["second"]] * 12 + [["third"]] * 12
+    cues = _run(monkeypatch, script, should_cancel=_cancel_after_a_while)
+    assert cues, "cancelling discarded everything"
+    assert cues[0].text == "first"
+
+
+def test_cancel_closes_the_open_cue(monkeypatch):
+    cues = _run(monkeypatch, [["only"]] * 30, should_cancel=lambda: True)
+    assert len(cues) == 1
+    assert cues[0].end > cues[0].start
+
+
+def test_no_cancel_callback_runs_to_completion(monkeypatch):
+    cues = _run(monkeypatch, [["a"]] * 10 + [[]] + [["b"]] * 10 + [[]])
+    assert [c.text for c in cues] == ["a", "b"]
+
+
+def test_min_duration_defaults_to_one_second():
+    """Measured, not guessed: on a real extraction every junk cue sat at the
+    0.5 floor and every genuine caption ran 1.5s or longer."""
+    assert ExtractSettings().min_duration_s == 1.0
+
+
+# ── The /api/ocr/extract path contract ────────────────────────────────────
+#
+# _validate_readable_path RETURNS (path, error) rather than raising. The
+# endpoint originally assigned the whole tuple and passed it to Path(),
+# which produced a TypeError and a 500 on the very first real request. No
+# test touched the endpoint's path handling, so nothing caught it.
+
+@pytest.fixture()
+def api(tmp_path):
+    from gensrt.server import app
+
+    app.config["TESTING"] = True
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"x")
+    return app.test_client(), video
+
+
+def test_valid_video_reaches_the_engine_as_a_path(api, monkeypatch):
+    from gensrt.models import SRTSegment
+
+    client, video = api
+    seen = {}
+
+    def _fake(path, settings, progress=None, should_cancel=None):
+        seen["path"] = path
+        return [SRTSegment(index=1, start=0.0, end=2.0, text="ok")]
+
+    monkeypatch.setattr("gensrt.ocr.extract.extract_subtitles", _fake)
+    resp = client.post("/api/ocr/extract", json={
+        "video_path": str(video), "language": "ja",
+        "region": {"x": 0, "y": 837, "w": 3840, "h": 639},
+    })
+    assert resp.status_code == 200
+    assert resp.get_json()["cues"][0]["text"] == "ok"
+    # Not a tuple, and not a string that happens to look like one.
+    assert isinstance(seen["path"], (str, Path))
+    assert Path(seen["path"]).name == "clip.mp4"
+
+
+def test_missing_file_is_a_clean_404(api):
+    client, video = api
+    resp = client.post("/api/ocr/extract",
+                       json={"video_path": str(video.parent / "absent.mp4")})
+    assert resp.status_code == 404
+    assert "error" in resp.get_json()
+
+
+def test_unsupported_extension_is_a_clean_404(api, tmp_path):
+    client, _ = api
+    notes = tmp_path / "notes.txt"
+    notes.write_text("not a video")
+    resp = client.post("/api/ocr/extract", json={"video_path": str(notes)})
+    assert resp.status_code == 404
+
+
+def test_region_must_be_complete(api):
+    client, video = api
+    resp = client.post("/api/ocr/extract", json={
+        "video_path": str(video), "region": {"x": 0, "y": 10},
+    })
+    assert resp.status_code == 400
+    assert "region" in resp.get_json()["error"]

@@ -91,10 +91,15 @@ class ExtractSettings:
     sample_fps: float = 2.0
     start_time: float = 0.0
     end_time: float | None = None
-    min_duration_s: float = 0.5
+    # 1.0 rather than 0.5, measured: on a real extraction every junk cue
+    # (partial reads during fades, single characters off a logo) sat exactly
+    # at the 0.5 floor, while every genuine caption ran 1.5s or longer.
+    # Raising it removed 18 of 46 cues and cost no real dialogue.
+    min_duration_s: float = 1.0
     similarity: float = 0.85
     translate: bool = False
     target_language: str = "en"
+    det_limit_side_len: int = 1280
 
     def validate(self) -> None:
         if self.sample_fps <= 0:
@@ -299,6 +304,7 @@ def extract_subtitles(
     settings: ExtractSettings,
     *,
     progress=None,
+    should_cancel=None,
 ) -> list[SRTSegment]:
     """Read burned-in subtitles out of *video_path*.
 
@@ -308,6 +314,11 @@ def extract_subtitles(
         progress:   Optional ``(frames_done, frames_total, seconds_position,
                     cues_so_far) -> None`` callback.  ``frames_total`` is an
                     estimate when the video duration is unknown.
+        should_cancel: Optional ``() -> bool``.  Polled while sampling; when
+                    it returns True the run stops early and returns the cues
+                    found SO FAR rather than raising.  A three-hour film is
+                    long enough that abandoning an hour of completed work
+                    would be worse than an incomplete answer.
 
     Returns:
         Subtitle segments in timeline order, ready for ``build_srt``.
@@ -337,7 +348,7 @@ def extract_subtitles(
     # Then the model — still before ffmpeg spawns, so a missing model fails
     # fast rather than after the first frames arrive.
     recognizer = get_recognizer(settings.language)
-    detector = get_detector()
+    detector = get_detector(limit_side_len=settings.det_limit_side_len)
 
     if settings.region:
         width, height = settings.region[2], settings.region[3]
@@ -366,6 +377,7 @@ def extract_subtitles(
     cues: list[SRTSegment] = []
     open_cue: _OpenCue | None = None
     frame_index = 0
+    cancelled = False
 
     def close(cue: _OpenCue, end_time: float) -> None:
         text, confidence = cue.vote()
@@ -437,11 +449,26 @@ def extract_subtitles(
                                     readings=[(reading, mean_score)])
 
             frame_index += 1
-            if progress and frame_index % 10 == 0:
-                progress(frame_index, total_frames, timestamp, len(cues))
+            if frame_index % 10 == 0:
+                if progress:
+                    progress(frame_index, total_frames, timestamp, len(cues))
+                if should_cancel and should_cancel():
+                    logger.info("Extraction cancelled at %.1fs — keeping %d cue(s)",
+                                timestamp, len(cues))
+                    cancelled = True
+                    break
 
         if open_cue is not None:
             close(open_cue, open_cue.last_seen + step)
+
+        if cancelled:
+            # The open cue was already closed by the block above; closing it
+            # again would emit it twice. Killing ffmpeg mid-stream also makes
+            # it exit non-zero, which is not a failure here, so the exit-code
+            # and zero-frame checks below are skipped entirely.
+            logger.info("Extraction cancelled: %d cue(s) from %d frame(s)",
+                        len(cues), frame_index)
+            return cues
 
         stderr = proc.stderr.read().decode("utf-8", "replace").strip()
         exit_code = proc.wait()

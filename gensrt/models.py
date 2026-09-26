@@ -38,6 +38,7 @@ class TranslationEngineKey(str, Enum):
 
     GOOGLE = "google"
     NLLB = "nllb"
+    MADLAD = "madlad"
     NONE = "none"
 
 
@@ -212,6 +213,14 @@ class TranscriptionConfig:
     # because the picker is interactive: Google's 429 backoff costs ~12s of
     # spinner before falling back to exactly the engine "auto" would have
     # picked immediately. Set to "google"/"nllb"/"none" to override.
+    # Longest side the text DETECTOR scales its input to. RapidOCR's own
+    # default scales the SHORT side up to 736, which on a wide subtitle band
+    # means upscaling a 1920x178 strip to 7932x736 — measured at 0.94 s per
+    # frame against 0.34 s when the long side is capped at 1280, with
+    # identical boxes found. Lower is faster and coarser; recognition is
+    # unaffected either way, since crops come from the full-resolution frame.
+    ocr_det_limit_side_len: int = 1280
+
     ocr_translation_engine: str = "auto"
     ocr_language: str = "ja"
     ocr_min_confidence: float = 0.0
@@ -285,6 +294,11 @@ class TranscriptionConfig:
     # models/, or a full path. Swapping to a different conversion is a
     # config change, not a code change.
     translation_model: str = "mijuanlo/nllb-200-distilled-600M-ct2-int8"
+
+    # Separate from translation_model on purpose: that one names an NLLB
+    # repo, and pointing both engines at a single field would hand each the
+    # other's model the moment anyone switched engines.
+    madlad_model: str = "olob0/madlad400-3b-mt-ct2-int8_float16"
 
     # Backend (set by gpu_probe, not directly by user)
     backend: str = "cuda"

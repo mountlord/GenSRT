@@ -301,7 +301,7 @@ class _StubRecognizer:
 
 
 def _patch_pipeline(monkeypatch, detector, recognizer):
-    monkeypatch.setattr("gensrt.ocr.factory.get_detector", lambda: detector)
+    monkeypatch.setattr("gensrt.ocr.factory.get_detector", lambda **_kw: detector)
     monkeypatch.setattr("gensrt.ocr.factory.get_recognizer",
                         lambda code, status=None: recognizer)
     monkeypatch.setattr("gensrt.ocr.ppocr_onnx.crop_region",

@@ -27,6 +27,7 @@ from pathlib import Path
 
 from gensrt import __version__
 from gensrt.models import TranscriptionConfig
+from gensrt.translation.factory import ENGINE_KEYS, FALLBACK_KEYS
 
 logger = logging.getLogger(__name__)
 
@@ -165,11 +166,14 @@ def _build_parser() -> argparse.ArgumentParser:
     tr.add_argument(
         "--translation-engine",
         dest="translation_engine",
-        choices=["google", "nllb", "none"],
+        choices=list(ENGINE_KEYS),
         default=None,
         help=f"Translation engine (default: {bd['translation_engine']!r}). "
              "'google' uses the Google GTX endpoint (any target language, "
-             "needs a network connection); 'nllb' runs NLLB-200 fully "
+             "needs a network connection); 'madlad' runs MADLAD-400 offline "
+             "and is Apache-2.0 so commercial use is fine (one-time ~2.9 GB "
+             "download, roughly twice the per-cue cost of nllb); "
+             "'nllb' runs NLLB-200 fully "
              "offline on this machine (one-time ~650 MB model download; "
              "the model weights are CC-BY-NC-4.0 — non-commercial use "
              "only, see README); 'none' transcribes without translating.",
@@ -177,7 +181,7 @@ def _build_parser() -> argparse.ArgumentParser:
     tr.add_argument(
         "--translation-fallback",
         dest="translation_fallback",
-        choices=["nllb", "mymemory", "none"],
+        choices=list(FALLBACK_KEYS),
         default=None,
         help=f"What to do when a Google batch fails, e.g. on rate limiting "
              f"(default: {bd['translation_fallback']!r}). 'nllb' translates "
@@ -257,7 +261,7 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="min_cue_duration",
         type=float,
         default=None,
-        help="Discard cues shorter than this many seconds (default: 0.5) — "
+        help="Discard cues shorter than this many seconds (default: 1.0) — "
              "they are usually fade-in/out artifacts.",
     )
     ext.add_argument(
@@ -704,7 +708,7 @@ def _run_extract(args) -> int:
         start_time=args.extract_from or 0.0,
         end_time=args.extract_to,
         min_duration_s=(args.min_cue_duration
-                        if args.min_cue_duration is not None else 0.5),
+                        if args.min_cue_duration is not None else 1.0),
         similarity=(args.similarity if args.similarity is not None else 0.85),
         translate=bool(merged.get("translate", False)),
         target_language=merged.get("target_language", "en"),
@@ -737,8 +741,11 @@ def _run_extract(args) -> int:
     print("", file=sys.stderr)
 
     if not cues:
-        print("No subtitles found. Check the region — the most common cause "
-              "is a box that misses the text.", file=sys.stderr)
+        # Reaching here means frames WERE sampled and none contained readable
+        # text; a range that sampled nothing raises before this point.
+        print("No text found in the sampled frames. Check the region covers "
+              "the subtitles, and that --ocr-language matches the script on "
+              "screen.", file=sys.stderr)
         return 1
 
     subtitles = build_srt(

@@ -68,6 +68,61 @@ if (-not $pyinstallerCheck) {
     Write-Host "PyInstaller found." -ForegroundColor Green
 }
 
+# ── Base requirements pre-flight ───────────────────────────────────────────
+#
+# PyInstaller bundles whatever is in the ACTIVE venv.  A venv that predates a
+# requirements.txt change therefore produces an installer that is missing
+# those packages — and nothing in the build says so.  That is exactly how a
+# venv-pascal created before OCR shipped produced a pascal installer whose
+# only symptom was "No module named 'cv2'" on the target machine.
+#
+# Import-checking rather than pip-show-checking on purpose: import is what
+# PyInstaller and the packaged build actually do, and it catches a broken
+# install that pip still reports as present.
+
+Write-Host ""
+Write-Host "Checking base requirements..." -ForegroundColor Yellow
+$requiredModules = @(
+    @{ Module = "ctranslate2";          Package = "ctranslate2" },
+    @{ Module = "faster_whisper";       Package = "faster-whisper" },
+    @{ Module = "tokenizers";           Package = "tokenizers" },
+    @{ Module = "huggingface_hub";      Package = "huggingface_hub" },
+    @{ Module = "flask";                Package = "flask" },
+    @{ Module = "numpy";                Package = "numpy" },
+    # OCR — added in the OCR release.  A venv older than that has none of
+    # these, which is the failure this whole block exists to catch.
+    @{ Module = "onnxruntime";          Package = "onnxruntime" },
+    @{ Module = "cv2";                  Package = "opencv-python" },
+    @{ Module = "rapidocr_onnxruntime"; Package = "rapidocr-onnxruntime" },
+    @{ Module = "shapely";              Package = "Shapely" },
+    @{ Module = "pyclipper";            Package = "pyclipper" },
+    @{ Module = "PIL";                  Package = "Pillow" }
+)
+$missingModules = @()
+foreach ($entry in $requiredModules) {
+    python -c "import $($entry.Module)" 2>$null
+    if ($LASTEXITCODE -ne 0) { $missingModules += $entry }
+}
+if ($missingModules.Count -gt 0) {
+    Write-Host ""
+    Write-Host "ERROR: the active venv is missing packages the build needs:" -ForegroundColor Red
+    foreach ($m in $missingModules) {
+        Write-Host "  - $($m.Package)  (import $($m.Module))" -ForegroundColor Red
+    }
+    Write-Host ""
+    Write-Host "This venv is probably older than the current requirements.txt." -ForegroundColor Yellow
+    Write-Host "Building anyway would produce an installer that fails on the" -ForegroundColor Yellow
+    Write-Host "target machine with ModuleNotFoundError." -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "Fix:  pip install -r requirements.txt" -ForegroundColor Yellow
+    if ($isCuda) {
+        Write-Host "      pip install -r $cudaReqFile" -ForegroundColor Yellow
+    }
+    Write-Host "      pip install -e ." -ForegroundColor Yellow
+    exit 1
+}
+Write-Host "  all $($requiredModules.Count) required modules import cleanly" -ForegroundColor Green
+
 # ── Variant pre-flight ─────────────────────────────────────────────────────
 #
 # A CUDA build needs the nvidia-* wheels present in the venv, or
@@ -187,7 +242,30 @@ $pyiArgs = @(
     # to plain HTTP on first run.
     "--hidden-import=hf_xet",
     "--collect-all", "hf_xet",
+    # ── On-screen text recognition (OCR) ───────────────────────────────────
+    # rapidocr SHIPS ITS DETECTION MODEL INSIDE THE WHEEL as package data
+    # (models/*.onnx plus config.yaml, ~16 MB). PyInstaller copies code, not
+    # package data, so without --collect-all the packaged build imports
+    # cleanly and then fails at the first detect() with a missing-file error.
+    "--hidden-import=rapidocr_onnxruntime",
+    "--collect-all", "rapidocr_onnxruntime",
+
+    # onnxruntime carries native DLLs (onnxruntime_pybind11_state.pyd,
+    # onnxruntime_providers_shared.dll) under capi/. A bare --hidden-import
+    # brings the Python package without reliably bringing those.
     "--hidden-import=onnxruntime",
+    "--collect-all", "onnxruntime",
+
+    # rapidocr's DB post-processing imports these AT MODULE LEVEL
+    # (ch_ppocr_det/utils.py). Both are compiled extensions — shapely bundles
+    # the GEOS native libraries — so neither survives a code-only copy.
+    "--hidden-import=shapely",
+    "--collect-all", "shapely",
+    "--hidden-import=pyclipper",
+
+    "--hidden-import=cv2",
+    "--collect-all", "cv2",
+
     "--hidden-import=requests",
     "--hidden-import=srt",
     "--hidden-import=ffmpeg",
@@ -220,8 +298,12 @@ $pyiArgs = @(
 
     "--exclude-module", "matplotlib",
     "--exclude-module", "notebook",
-    "--exclude-module", "IPython",
-    "--exclude-module", "PIL"
+    "--exclude-module", "IPython"
+    # NOTE: PIL is deliberately NOT excluded any more. rapidocr does
+    # "from PIL import Image" at module level in utils/parse_parameters.py and
+    # utils/load_image.py, so excluding Pillow makes every OCR call fail with
+    # ModuleNotFoundError in the packaged build while working perfectly in a
+    # venv that happens to have it. It was safe to exclude before OCR existed.
 )
 
 if ($isCuda) {

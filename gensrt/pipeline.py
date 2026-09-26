@@ -86,21 +86,32 @@ def validate_chunking_config(config: TranscriptionConfig) -> None:
         )
 
 
-def _needs_nllb(config: TranscriptionConfig) -> bool:
-    """Whether this run could call the NLLB engine.
+def _offline_engine_needed(config: TranscriptionConfig) -> str | None:
+    """Which offline translation engine this run could call, if any.
 
-    True when NLLB is the primary engine, or when Google is primary with
-    NLLB as its batch-failure fallback.
+    Returns ``"nllb"``, ``"madlad"`` or ``None``. True in the same two
+    situations for either engine: it is the primary engine, or Google is
+    primary and it is the batch-failure fallback.
     """
     if not config.translate:
-        return False
-    engine = config.translation_engine.lower()
-    if engine == "nllb":
-        return True
-    return (
-        engine == "google"
-        and (config.translation_fallback or "").lower() == "nllb"
-    )
+        return None
+    engine = (config.translation_engine or "").lower()
+    if engine in ("nllb", "madlad"):
+        return engine
+    if engine == "google":
+        fallback = (config.translation_fallback or "").lower()
+        if fallback in ("nllb", "madlad"):
+            return fallback
+    return None
+
+
+def _needs_nllb(config: TranscriptionConfig) -> bool:
+    """Whether this run could call the NLLB engine specifically.
+
+    Kept as a thin wrapper over :func:`_offline_engine_needed` because it
+    is part of this module's tested surface.
+    """
+    return _offline_engine_needed(config) == "nllb"
 
 
 def ensure_translation_model(
@@ -127,20 +138,26 @@ def ensure_translation_model(
         *config*, possibly with the fallback downgraded (the dataclass is
         frozen, so degradation produces a new instance).
     """
-    if not _needs_nllb(config):
+    which = _offline_engine_needed(config)
+    if which is None:
         return config
 
-    from gensrt.translation.nllb_ct2 import ensure_model
+    if which == "madlad":
+        from gensrt.translation.madlad_ct2 import ensure_model
+        model_ref = config.madlad_model
+    else:
+        from gensrt.translation.nllb_ct2 import ensure_model
+        model_ref = config.translation_model
 
     try:
-        ensure_model(config.translation_model, status=status)
+        ensure_model(model_ref, status=status)
         return config
     except Exception as exc:
-        if config.translation_engine.lower() == "nllb":
+        if config.translation_engine.lower() in ("nllb", "madlad"):
             raise
         logger.warning(
-            "NLLB fallback model unavailable (%s) — failed Google batches "
-            "will keep their source text for this run.", exc,
+            "%s fallback model unavailable (%s) — failed Google batches "
+            "will keep their source text for this run.", which.upper(), exc,
         )
         return replace(config, translation_fallback="none")
 

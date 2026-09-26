@@ -443,6 +443,43 @@ def api_status():
     return jsonify({"status": "ok", "version": __version__})
 
 
+@app.route("/favicon.ico")
+def _favicon():
+    """No favicon is shipped; answer 204 so every page load stops logging a
+    404 for it."""
+    return ("", 204)
+
+
+@app.errorhandler(Exception)
+def _api_errors_stay_json(exc):
+    """Return JSON for /api/ failures instead of Flask's HTML error page.
+
+    Every client here parses JSON. An HTML error page produces
+    "Unexpected token '<'", which says nothing about what actually broke —
+    so API routes report the status and the message in the shape the caller
+    already expects.
+    """
+    from werkzeug.exceptions import HTTPException
+
+    status = exc.code if isinstance(exc, HTTPException) else 500
+    if not request.path.startswith("/api/"):
+        # Not ours — let Werkzeug render its normal page. RETURNING the
+        # HTTPException is how Flask is told "handle this the usual way";
+        # re-raising re-enters this handler via handle_exception and turns
+        # a plain 404 (/favicon.ico) into a 500 with a traceback.
+        if isinstance(exc, HTTPException):
+            return exc
+        logger.exception("Unhandled error on %s", request.path)
+        return "Internal Server Error", 500
+    if status >= 500:
+        logger.exception("Unhandled error on %s", request.path)
+    return jsonify({
+        "error": getattr(exc, "description", None) or str(exc) or "Server error",
+        "path": request.path,
+        "status": status,
+    }), status
+
+
 @app.route("/api/operation_status")
 def api_operation_status():
     """Poll endpoint for active operation progress.
@@ -626,12 +663,24 @@ _COMPUTE_CHOICES = {"auto", "float32", "float16", "int8_float16", "int8"}
 _ASR_ENGINE_CHOICES = {"auto", "chunked", "longform"}
 _DEVICE_CHOICES = {"cuda", "cpu", "auto"}
 _BACKEND_CHOICES = {"cuda", "rocm", "xpu", "cpu"}
-_ENGINE_CHOICES = {"google", "none"}
+# Derived from the translation factory rather than hand-copied: this table
+# went stale the moment NLLB shipped, and every engine and config field added
+# since v1.2.7 was silently unsaveable from the GUI ("unknown configuration
+# key") because the dataclass grew and this did not. Importing the key tuples
+# is cheap — factory.py imports the engines themselves lazily.
+from gensrt.translation.factory import ENGINE_KEYS as _TR_ENGINE_KEYS
+from gensrt.translation.factory import FALLBACK_KEYS as _TR_FALLBACK_KEYS
+
+_ENGINE_CHOICES = set(_TR_ENGINE_KEYS)
+_FALLBACK_CHOICES = set(_TR_FALLBACK_KEYS)
+#: "auto" lets the OCR path pick an offline engine for interactive latency.
+_OCR_ENGINE_CHOICES = {"auto", *_TR_ENGINE_KEYS}
 _LOG_LEVEL_CHOICES = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
 
 _INT_KEYS = {
     "gpu_id", "vad_min_speech_ms", "vad_min_silence_ms", "vad_speech_pad_ms",
     "max_line_chars", "max_lines",
+    "ocr_max_regions", "ocr_det_limit_side_len",
 }
 
 
@@ -646,6 +695,19 @@ def _v_str_in(allowed):
             return False, f"must be one of {sorted(allowed)}"
         return True, ""
     return inner
+
+def _v_model_ref(x):
+    """A model reference, or "" meaning "use the engine's default".
+
+    These fields were validated as non-empty strings, so a config that had
+    never set them rendered an empty box in the GUI and then refused to save
+    it — leaving no way to set them except by hand-editing the JSON. Empty
+    is a legitimate value: the engines fall back to their own DEFAULT_MODEL.
+    """
+    if not isinstance(x, str):
+        return False, "must be a string"
+    return True, ""
+
 
 def _v_bool(x):
     return (True, "") if isinstance(x, bool) else (False, "must be true or false")
@@ -689,8 +751,20 @@ _CONFIG_VALIDATORS = {
     "max_line_chars":          _v_num_range(0, 200, integer=True),
     "max_lines":               _v_num_range(1, 10, integer=True),
     "translation_engine":      _v_str_in(_ENGINE_CHOICES),
+    "translation_fallback":    _v_str_in(_FALLBACK_CHOICES),
+    "translation_model":       _v_model_ref,
+    "madlad_model":            _v_model_ref,
     "translate":               _v_bool,
     "target_language":         _v_str,
+    # Chunked inference (v1.2.7)
+    "max_chunk_s":             _v_num_range(1.0, 60.0),
+    "min_chunk_s":             _v_num_range(0.0, 30.0),
+    # On-screen text recognition
+    "ocr_language":            _v_str,
+    "ocr_translation_engine":  _v_str_in(_OCR_ENGINE_CHOICES),
+    "ocr_min_confidence":      _v_num_range(0.0, 1.0),
+    "ocr_max_regions":         _v_num_range(1, 200, integer=True),
+    "ocr_det_limit_side_len":  _v_num_range(320, 4096, integer=True),
     # Non-transcription (preserved-through, not currently surfaced in UI)
     "output":                  _v_str_or_null,
     "output_filename":         _v_str_or_null,
@@ -1633,6 +1707,163 @@ def _get_ocr_translator(cfg: dict, key: str):
     return engine
 
 
+# ── Subtitle extraction (OCR over a whole video) ──────────────────────────
+#
+# Runs SYNCHRONOUSLY on the request thread, like transcription does: Flask
+# serves /api/operation_status from other threads, so the client posts once
+# and polls for progress. Adding a second, different job mechanism for one
+# feature would be worse than a long-lived request on localhost.
+#
+# A feature film at 2 fps is tens of thousands of samples, so cancellation
+# matters and returns the cues found so far rather than discarding them.
+_ocr_extract_cancel = threading.Event()
+
+
+def _extract_cfg() -> dict:
+    """Effective config for the OCR routes (defaults + the config file)."""
+    from gensrt.config import BUILTIN_DEFAULTS
+
+    try:
+        return {**BUILTIN_DEFAULTS, **read_config_file(default_if_missing=True)}
+    except Exception:
+        return dict(BUILTIN_DEFAULTS)
+
+
+@app.route("/api/ocr/extract/cancel", methods=["POST"])
+def api_ocr_extract_cancel():
+    """Ask a running extraction to stop and keep what it has."""
+    _ocr_extract_cancel.set()
+    return jsonify({"status": "cancelling"})
+
+
+@app.route("/api/ocr/extract", methods=["POST"])
+def api_ocr_extract():
+    """Extract burned-in subtitles from a video.
+
+    Body (JSON) — the contract the Extract Subtitles modal assembles:
+      ``video_path``       required
+      ``region``           {x, y, w, h} in VIDEO pixels; omit for whole frame
+      ``language``         ISO 639-1 for the OCR model
+      ``translate``        bool; ``target_language`` for the target
+      ``sample_fps``       frames inspected per second
+      ``start_time``       seconds; ``end_time`` seconds or null
+      ``min_duration_s``   drop shorter cues
+      ``similarity``       0-1, "same subtitle" threshold
+      ``existing``         "append" | "replace" (echoed back; the client
+                           applies it, since it owns the cue list)
+
+    Returns:
+      200 ``{"cues": [{index, start, end, text}], "cancelled": bool,
+             "existing": "append"}``
+      400 bad body, 404 video missing, 409 another operation is running,
+      422 unknown language, 500 extraction failed.
+    """
+    from gensrt.exceptions import ConfigError
+
+    body = request.get_json(silent=True) or {}
+
+    raw_path = (body.get("video_path") or "").strip()
+    if not raw_path:
+        return jsonify({"error": "video_path is required"}), 400
+    # _validate_readable_path RETURNS (path, error) — it does not raise. Every
+    # other route unpacks it; this one did not, so the tuple went straight
+    # into Path() and produced a TypeError instead of a clean 404.
+    video, err = _validate_readable_path(raw_path)
+    if err:
+        return jsonify({"error": err}), 404
+
+    region = body.get("region") or None
+    if region:
+        try:
+            region = (int(region["x"]), int(region["y"]),
+                      int(region["w"]), int(region["h"]))
+        except (KeyError, TypeError, ValueError):
+            return jsonify({"error": "region must be {x, y, w, h}"}), 400
+
+    # Guarded: gensrt.ocr is imported only from inside functions, which is
+    # exactly the pattern PyInstaller's analysis can miss. Unguarded, a
+    # packaging gap surfaced as a Flask HTML error page and the client died
+    # on "Unexpected token '<'" — true, and useless.
+    try:
+        from gensrt.ocr.extract import ExtractSettings, extract_subtitles
+        from gensrt.ocr.ppocr_onnx import OCRError
+    except Exception as exc:
+        logger.exception("OCR extraction module unavailable")
+        return jsonify({
+            "error": f"The subtitle extraction module could not be loaded: "
+                     f"{exc}. In a packaged build this usually means "
+                     f"gensrt.ocr was not collected — check _internal for "
+                     f"gensrt/ocr/extract.pyc and for the rapidocr models."
+        }), 500
+
+    try:
+        settings = ExtractSettings(
+            region=region,
+            language=(body.get("language") or "ja").strip().lower(),
+            sample_fps=float(body.get("sample_fps") or 2.0),
+            start_time=float(body.get("start_time") or 0.0),
+            end_time=(float(body["end_time"])
+                      if body.get("end_time") not in (None, "") else None),
+            min_duration_s=float(body.get("min_duration_s") or 0.0),
+            similarity=float(body.get("similarity") or 0.85),
+            translate=bool(body.get("translate")),
+            target_language=(body.get("target_language") or "en").strip().lower(),
+            det_limit_side_len=int(
+                body.get("det_limit_side_len")
+                or _extract_cfg().get("ocr_det_limit_side_len", 1280) or 1280
+            ),
+        )
+        settings.validate()
+    except (TypeError, ValueError) as exc:
+        return jsonify({"error": f"Invalid settings: {exc}"}), 400
+    except ConfigError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    try:
+        _begin_long_operation(Path(video).name)
+    except OperationBusyError as exc:
+        return jsonify({"error": str(exc)}), 409
+
+    _ocr_extract_cancel.clear()
+
+    def _progress(done, total, position, found):
+        _update_active_operation(
+            current=done, total=(total or 0),
+            message=(f"Reading frames — {position / 60:.1f} min, "
+                     f"{found} cue(s) found"),
+        )
+
+    try:
+        _update_active_operation(message="Starting extraction…", current=0, total=0)
+        cues = extract_subtitles(
+            video, settings,
+            progress=_progress,
+            should_cancel=_ocr_extract_cancel.is_set,
+        )
+    except (ConfigError, OCRError) as exc:
+        # Both carry an actionable, user-facing message — a range past the end
+        # of the video, a region larger than the frame, a language with no
+        # model. Those are the caller's input to fix, not a server fault, and
+        # reporting them as 500 (with a traceback in the console) was wrong.
+        logger.warning("Extraction rejected: %s", exc)
+        return jsonify({"error": str(exc)}), 422
+    except Exception as exc:
+        logger.exception("Subtitle extraction failed")
+        return jsonify({"error": str(exc)}), 500
+    finally:
+        _end_long_operation()
+
+    return jsonify({
+        "cues": [
+            {"index": c.index, "start": c.start, "end": c.end, "text": c.text}
+            for c in cues
+        ],
+        "cancelled": _ocr_extract_cancel.is_set(),
+        "existing": (body.get("existing") or "append"),
+        "language": settings.language,
+    })
+
+
 @app.route("/api/ocr/languages")
 def api_ocr_languages():
     """Registry of OCR languages, with which models are already on disk.
@@ -1719,6 +1950,7 @@ def api_ocr():
             language,
             max_regions=int(cfg.get("ocr_max_regions", 40) or 40),
             min_confidence=float(cfg.get("ocr_min_confidence", 0.0) or 0.0),
+            det_limit_side_len=int(cfg.get("ocr_det_limit_side_len", 1280) or 1280),
         )
     except ConfigError as exc:
         # Unknown language is the caller's mistake, not a server fault.

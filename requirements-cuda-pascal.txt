@@ -10,6 +10,14 @@
 #   venv-pascal\Scripts\pip install -r requirements-cuda-pascal.txt
 #   venv-pascal\Scripts\pip install -e .
 #
+# RE-RUN THE requirements.txt LINE AFTER ANY RELEASE THAT ADDS A DEPENDENCY.
+# This venv is long-lived and separate, so it silently falls behind: a
+# venv-pascal created before OCR shipped builds a pascal installer with no
+# opencv, onnxruntime or rapidocr, and the only symptom is
+# "No module named 'cv2'" on the user's machine.  Pack-gensrt.ps1 now
+# import-checks the base requirements and refuses to build, but the cheapest
+# fix is to re-run the line above whenever you pull.
+#
 # The capped and uncapped cuDNN wheels are both the distribution
 # "nvidia-cudnn-cu12" and CANNOT coexist in one environment — use a
 # separate venv (venv-pascal) for this variant.  Pack-gensrt.ps1

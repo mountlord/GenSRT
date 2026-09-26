@@ -41,15 +41,48 @@ class OCRError(GenSRTError):
 
 # ── Detection ─────────────────────────────────────────────────────────────
 
+#: How detection resizes its input. RapidOCR's own default is
+#: ``limit_type="min", limit_side_len=736``: scale so the SHORT side is at
+#: least 736. That is sensible for pages and photographs and pathological
+#: for subtitle bands, which are short and very wide — it UPSCALES them.
+#:
+#: Measured, on a real 1920x178 subtitle band:
+#:     min / 736   -> detection input 7932x736 (5.8 MPix), 0.94 s/frame
+#:     max / 1280  -> detection input 1280x119 (0.15 MPix), 0.34 s/frame
+#: identical boxes found on every frame tested.
+#:
+#: It gets worse as the band gets thinner: a 3840x220 region becomes
+#: 12832x736 (9.4 MPix) under the default, so tightening the region — the
+#: obvious optimisation — makes detection SLOWER, not faster.
+#:
+#: Capping the LONG side instead bounds the work regardless of shape. This
+#: costs nothing in recognition quality: detection only locates boxes, and
+#: the crops fed to the recogniser are taken from the ORIGINAL full-
+#: resolution frame.
+DEFAULT_DET_LIMIT_TYPE = "max"
+DEFAULT_DET_LIMIT_SIDE_LEN = 1280
+
+
 class PPOCRDetector(TextDetector):
     """PaddleOCR DB text detection via RapidOCR, recognition disabled.
 
     RapidOCR ships its detection model inside the wheel (~4.5 MB), so this
     stage needs no download at all — unlike the language-specific
     recognition models.
+
+    Args:
+        limit_side_len: Longest side the detector's input is scaled to.
+            Lower is faster and coarser; 1280 kept detection identical to
+            the default on real subtitle frames.
+        limit_type: ``"max"`` caps the long side (see the module constants
+            for why that matters here); ``"min"`` restores RapidOCR's own
+            behaviour if a region ever needs it.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, limit_side_len: int | None = None,
+                 limit_type: str | None = None) -> None:
+        self._limit_side_len = int(limit_side_len or DEFAULT_DET_LIMIT_SIDE_LEN)
+        self._limit_type = (limit_type or DEFAULT_DET_LIMIT_TYPE).lower()
         self._engine = None
         self._lock = threading.Lock()
 
@@ -71,8 +104,14 @@ class PPOCRDetector(TextDetector):
                     "not installed. Reinstall GenSRT, or "
                     "`pip install rapidocr-onnxruntime==1.4.4`."
                 ) from exc
-            self._engine = RapidOCR()
-            logger.info("PP-OCR detector loaded")
+            self._engine = RapidOCR(
+                det_limit_type=self._limit_type,
+                det_limit_side_len=self._limit_side_len,
+            )
+            logger.info(
+                "PP-OCR detector loaded (det input capped at %d px, %s side)",
+                self._limit_side_len, self._limit_type,
+            )
             return self._engine
 
     def detect(self, image_bgr) -> list[TextRegion]:

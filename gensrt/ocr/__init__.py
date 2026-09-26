@@ -24,6 +24,7 @@ def read_frame(
     max_regions: int = 40,
     min_confidence: float = 0.0,
     include_crops: bool = True,
+    det_limit_side_len: int | None = None,
     status=None,
 ) -> list[TextRegion]:
     """Detect and read every text region in one frame.
@@ -56,7 +57,7 @@ def read_frame(
     # Recognizer first: it is the stage that may download, and failing
     # before spending detection time gives a faster, clearer error.
     recognizer = get_recognizer(language, status=status)
-    detector = get_detector()
+    detector = get_detector(limit_side_len=det_limit_side_len)
 
     regions = detector.detect(image_bgr)
     if not regions:
