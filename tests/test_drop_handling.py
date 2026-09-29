@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pytest
 
-from gensrt.server import resolve_drop_targets
+from gensrt.api.jobs import resolve_drop_targets
 
 
 @pytest.fixture

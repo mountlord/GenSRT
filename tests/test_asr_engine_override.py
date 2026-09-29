@@ -84,7 +84,7 @@ def test_cli_rejects_bad_value():
 
 
 def test_server_validator_accepts_the_choices():
-    from gensrt.server import _CONFIG_VALIDATORS
+    from gensrt.api.config import _CONFIG_VALIDATORS
 
     v = _CONFIG_VALIDATORS["asr_engine"]
     for good in ("auto", "chunked", "longform"):

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import re
 
-from gensrt.server import _BURN_STAGE_PREFIX, _stage_srt_for_burn
+from gensrt.api.jobs import _BURN_STAGE_PREFIX, _stage_srt_for_burn
 
 SAFE_NAME = re.compile(r"^[A-Za-z0-9_]+\.srt$")
 

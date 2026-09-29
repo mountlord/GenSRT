@@ -142,6 +142,14 @@ if (gotoTimeBtn) {
 
 // ── Load Video ────────────────────────────────────────────
 function loadVideo(file) {
+  // In the desktop window a dropped File carries its full path.  Use the
+  // path flow: a blob URL of a transport stream cannot play (and the
+  // native drop handler is about to load the same path anyway).
+  const full = file && file.pywebviewFullPath;
+  if (full && typeof window.tilesterSetVideoFromPath === 'function') {
+    window.tilesterSetVideoFromPath(String(full));
+    return;
+  }
   const url = URL.createObjectURL(file);
   player.src         = url;
   player.style.display = 'block';
@@ -164,6 +172,12 @@ function tilesterSetVideoFromPath(fullPath) {
     return;
   }
 
+  // The DOM drop handler and pywebview's native drop handler both fire for
+  // one drop; the second arrival of the same path within a moment is a
+  // duplicate, not a reload.
+  if (p === _lastSetPath && Date.now() - _lastSetAt < 1500) return;
+  _lastSetPath = p; _lastSetAt = Date.now();
+
   currentFullVideoPath = p;
   currentProjectPath   = null; // new video → clear project path until user loads/saves
 
@@ -178,17 +192,176 @@ function tilesterSetVideoFromPath(fullPath) {
     try { player.pause(); } catch {}
     try { player.removeAttribute('src'); player.load(); } catch {}
 
-    player.src = `/api/media?path=${encodeURIComponent(p)}`;
     player.style.display = 'block';
     if (videoContainer) videoContainer.style.display = 'block';
     if (videoDrop) videoDrop.style.display = 'none';
-    player.load();
+
+    const seq = ++_videoLoadSeq;
+    if (_needsRemux(p)) {
+      // Transport streams are rewrapped to MP4 on the server first (the
+      // embedded browser cannot open them — see gensrt/remux.py).
+      _prepareThenLoad(p, seq);
+    } else {
+      _hidePrepOverlay();
+      _setSaveMp4Visible(false);
+      _attachSource(p);
+    }
 
     try { tryFetchNominalFpsFromServer(p); } catch {}
   } catch (e) {
     console.warn('Failed to set player.src from path:', e);
   }
 }
+
+// ── Transport-stream rewrap (server-side, cached) ─────────
+let _videoLoadSeq = 0;
+let _lastSetPath = null;
+let _lastSetAt = 0;
+const _REMUX_EXT = /\.(ts|m2ts|mts)$/i;
+
+function _needsRemux(p) { return _REMUX_EXT.test(p || ''); }
+
+function _attachSource(p) {
+  player.src = `/api/media?path=${encodeURIComponent(p)}`;
+  player.load();
+}
+
+function _prepOverlay() {
+  let el = document.getElementById('videoPrepOverlay');
+  if (!el && videoContainer) {
+    el = document.createElement('div');
+    el.id = 'videoPrepOverlay';
+    el.style.cssText = 'position:absolute; inset:0; display:flex; flex-direction:column; ' +
+      'align-items:center; justify-content:center; gap:8px; background:rgba(0,0,0,0.72); ' +
+      'color:var(--text); font-size:14px; z-index:5; text-align:center; padding:16px;';
+    el.innerHTML = '<div id="videoPrepLabel"></div>' +
+      '<div style="width:60%; max-width:360px; height:6px; background:var(--surface2); border-radius:3px; overflow:hidden;">' +
+      '<div id="videoPrepBar" style="height:100%; width:0%; background:var(--accent, #7c5cff); transition:width .3s;"></div></div>' +
+      '<div id="videoPrepNote" style="font-size:11px; opacity:.7;">One-time rewrap to MP4 (no re-encode); cached for next time.</div>';
+    videoContainer.appendChild(el);
+  }
+  return el;
+}
+
+function _showPrepOverlay(label, frac) {
+  const el = _prepOverlay();
+  if (!el) return;
+  el.style.display = 'flex';
+  const lbl = document.getElementById('videoPrepLabel');
+  const bar = document.getElementById('videoPrepBar');
+  const withBar = typeof frac === 'number';
+  if (lbl) lbl.textContent = label;
+  if (bar) {
+    bar.parentElement.style.display = withBar ? 'block' : 'none';
+    bar.style.width = (withBar ? Math.round(frac * 100) : 0) + '%';
+  }
+  const note = document.getElementById('videoPrepNote');
+  if (note) note.style.display = withBar ? 'block' : 'none';
+}
+
+// A message in the video area, no bar, no modal — for "cannot play".
+function _showVideoMessage(html) {
+  _showPrepOverlay('', null);
+  const lbl = document.getElementById('videoPrepLabel');
+  if (lbl) lbl.innerHTML = html;
+}
+
+function _hidePrepOverlay() {
+  const el = document.getElementById('videoPrepOverlay');
+  if (el) el.style.display = 'none';
+}
+
+async function _prepareThenLoad(p, seq) {
+  const name = basenameFromPath(p);
+  _showPrepOverlay(`Preparing ${name} for playback…`, 0);
+  try {
+    let resp = await fetch('/api/media/prepare', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: p }),
+    });
+    let st = await resp.json();
+    if (!resp.ok) throw new Error(st.error || `HTTP ${resp.status}`);
+    while (st.status === 'preparing' || st.status === 'unprepared') {
+      if (seq !== _videoLoadSeq) return;           // another video was opened
+      const pct = (typeof st.progress === 'number') ? Math.round(st.progress * 100) : null;
+      _showPrepOverlay(pct === null ? `Preparing ${name} for playback…`
+                       : pct >= 100 ? `Finalising ${name}…`
+                       : `Preparing ${name} for playback… ${pct}%`, st.progress || 0);
+      await new Promise(r => setTimeout(r, 700));
+      if (st.status === 'unprepared') {
+        resp = await fetch('/api/media/prepare', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path: p }),
+        });
+      } else {
+        resp = await fetch(`/api/media/status?path=${encodeURIComponent(p)}`);
+      }
+      st = await resp.json();
+      if (!resp.ok) throw new Error(st.error || `HTTP ${resp.status}`);
+    }
+    if (seq !== _videoLoadSeq) return;
+    if (st.status !== 'ready') throw new Error(st.error || `remux ${st.status}`);
+    _hidePrepOverlay();
+    _setSaveMp4Visible(true);
+    _attachSource(p);
+  } catch (e) {
+    if (seq !== _videoLoadSeq) return;
+    console.error('Preparing video for playback failed:', e);
+    _showVideoMessage(`<b>${name}</b><br>Cannot prepare for playback: ${e.message || e}`);
+  }
+}
+
+// ── Save the MP4 rewrap ───────────────────────────────────
+function _setSaveMp4Visible(on) {
+  const b = document.getElementById('saveMp4Btn');
+  if (b) b.style.display = on ? '' : 'none';
+}
+
+async function saveMp4Copy() {
+  const src = currentFullVideoPath;
+  if (!src || !_needsRemux(src)) return;
+  const sep = src.includes('\\') ? '\\' : '/';
+  const idx = src.lastIndexOf(sep);
+  const dir = idx >= 0 ? src.slice(0, idx) : '';
+  const defName = basenameFromPath(src).replace(/\.[^.]+$/, '') + '.mp4';
+  let dest = null;
+  if (typeof window.pywebview !== 'undefined' && window.pywebview.api && typeof window.pywebview.api.save_mp4_as === 'function') {
+    try { dest = await window.pywebview.api.save_mp4_as(defName, dir); }
+    catch (e) {
+      console.error('save_mp4_as dialog failed:', e);
+      try { showErrorDialog('Save MP4 failed', 'The save dialog could not be opened: ' + (e.message || e)); } catch {}
+      return;
+    }
+    if (!dest) return;                                   // cancelled
+  } else {
+    const name = prompt('Save MP4 as (same folder as the recording):', defName);
+    if (!name) return;
+    dest = dir + sep + name;
+  }
+  const btn = document.getElementById('saveMp4Btn');
+  const label = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Saving…'; }
+  try {
+    const resp = await fetch('/api/media/export', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: src, dest }),
+    });
+    const body = await resp.json();
+    if (!resp.ok) throw new Error(body.error || `HTTP ${resp.status}`);
+    if (btn) btn.textContent = '✓ Saved';
+    setTimeout(() => { if (btn) btn.textContent = label; }, 2000);
+  } catch (e) {
+    console.error('Save MP4 failed:', e);
+    if (btn) btn.textContent = label;
+    try { showErrorDialog('Save MP4 failed', String(e.message || e)); } catch {}
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+(function () {
+  const b = document.getElementById('saveMp4Btn');
+  if (b) b.addEventListener('click', saveMp4Copy);
+})();
 
 function tilesterSetVideoPath(fullPath) {
   tilesterSetVideoFromPath(fullPath);
@@ -326,6 +499,30 @@ if (vcPlayBtn) {
 }
 player.addEventListener('play',  _updateVcPlayBtn);
 player.addEventListener('pause', _updateVcPlayBtn);
+
+// A <video> that cannot play its source fails SILENTLY: no console line,
+// no dialog, the element just stays black.  Surface the MediaError so a
+// container or codec refusal (WebView2 declining an MPEG-TS, an HEVC
+// stream without the codec pack) is on screen instead of guessed at.
+const _MEDIA_ERR = {
+  1: 'MEDIA_ERR_ABORTED — loading was aborted',
+  2: 'MEDIA_ERR_NETWORK — the server stopped sending data',
+  3: 'MEDIA_ERR_DECODE — the file was served but could not be decoded',
+  4: 'MEDIA_ERR_SRC_NOT_SUPPORTED — this container/codec is not playable by the embedded browser',
+};
+player.addEventListener('error', () => {
+  const err  = player.error;
+  const code = err ? err.code : 0;
+  const what = _MEDIA_ERR[code] || `unknown media error (code ${code})`;
+  const detail = err && err.message ? ` — ${err.message}` : '';
+  console.error(`video element error: ${what}${detail}`, { src: player.currentSrc, networkState: player.networkState, readyState: player.readyState });
+  // An element with no source yet (cleared before a load) can report an
+  // error too; that is not news.  Only a real source gets a message.
+  if (!player.currentSrc) return;
+  try {
+    _showVideoMessage(`<b>${basenameFromPath(currentFullVideoPath || '') || 'The video'}</b><br>Cannot play: ${what}${detail}`);
+  } catch (e) { /* overlay helper not ready */ }
+});
 
 if (vcVolumeBtn) {
   vcVolumeBtn.addEventListener('click', () => {

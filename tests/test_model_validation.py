@@ -8,7 +8,7 @@ checked existence, so it gave a green light to a model that can never load.
 
 from __future__ import annotations
 
-from gensrt.server import _ct2_format_problem
+from gensrt.api.config import _ct2_format_problem
 
 
 def _payload(*filenames):
@@ -81,9 +81,9 @@ def test_validation_uses_requests_not_urllib():
     """
     import inspect
 
-    from gensrt import server
+    from gensrt.api import config
 
-    src = inspect.getsource(server.api_validate_model)
+    src = inspect.getsource(config.api_validate_model)
     assert "import requests" in src
     assert "urllib.request.urlopen" not in src
 

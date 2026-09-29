@@ -2,7 +2,7 @@
 
 Why this file exists
 --------------------
-server.py validates config saves against a hand-maintained table,
+gensrt/api/config.py validates config saves against a hand-maintained table,
 ``_CONFIG_VALIDATORS``. TranscriptionConfig grew ten fields between v1.2.7
 and the OCR work — NLLB, MADLAD, chunk sizes, every OCR setting — and none
 of them were added to that table. The GUI rejected all of them with
@@ -19,15 +19,15 @@ import dataclasses
 
 import pytest
 
+from gensrt.api.config import _CONFIG_VALIDATORS, _validate_config_patch
 from gensrt.models import TranscriptionConfig
-from gensrt.server import _CONFIG_VALIDATORS, _validate_config_patch
 
 
 def test_every_config_field_is_saveable_from_the_gui():
     """Any field on TranscriptionConfig must have a validator.
 
     If this fails, you added a config field and the GUI cannot save it.
-    Add it to _CONFIG_VALIDATORS in server.py.
+    Add it to _CONFIG_VALIDATORS in gensrt/api/config.py.
     """
     fields = {f.name for f in dataclasses.fields(TranscriptionConfig)}
     missing = sorted(fields - set(_CONFIG_VALIDATORS))

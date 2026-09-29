@@ -371,11 +371,11 @@ def _clear_ocr_translator_cache():
     the NLLB model is not reloaded per request. That cache is shared across
     tests too, so clear it around each one — otherwise a test that patches
     get_engine silently gets a previous test's engine instead."""
-    import gensrt.server as server
+    from gensrt.api import ocr
 
-    server._ocr_translator_cache.clear()
+    ocr._ocr_translator_cache.clear()
     yield
-    server._ocr_translator_cache.clear()
+    ocr._ocr_translator_cache.clear()
 
 
 @pytest.fixture()
@@ -460,7 +460,7 @@ def test_successful_read_returns_the_documented_shape(client, monkeypatch):
     ({}, "nllb", "empty config falls back to the built-in default"),
 ])
 def test_ocr_engine_choice_follows_the_configured_engine(cfg, expected, why):
-    from gensrt.server import _resolve_ocr_engine_key
+    from gensrt.api.ocr import _resolve_ocr_engine_key
 
     assert _resolve_ocr_engine_key(cfg) == expected, why
 
@@ -468,7 +468,7 @@ def test_ocr_engine_choice_follows_the_configured_engine(cfg, expected, why):
 def test_translation_engine_is_built_once_and_reused(monkeypatch):
     """The NLLB model was being pushed to the GPU on every request — 2-3s
     each time for a model that was resident a moment earlier."""
-    import gensrt.server as server
+    from gensrt.api import ocr
 
     built = []
 
@@ -477,11 +477,11 @@ def test_translation_engine_is_built_once_and_reused(monkeypatch):
         return object()
 
     monkeypatch.setattr("gensrt.translation.factory.get_engine", _count)
-    monkeypatch.setattr(server, "_ocr_translator_cache", {})
+    monkeypatch.setattr(ocr, "_ocr_translator_cache", {})
 
     cfg = {"translation_engine": "nllb", "translation_model": "m", "device": "cuda"}
-    first = server._get_ocr_translator(cfg, "nllb")
-    second = server._get_ocr_translator(cfg, "nllb")
+    first = ocr._get_ocr_translator(cfg, "nllb")
+    second = ocr._get_ocr_translator(cfg, "nllb")
     assert first is second
     assert built == ["nllb"]
 
@@ -489,15 +489,15 @@ def test_translation_engine_is_built_once_and_reused(monkeypatch):
 def test_changing_the_model_builds_a_new_engine(monkeypatch):
     """Cache keys include the settings that shape the engine, so a config
     change produces a fresh entry rather than a stale one."""
-    import gensrt.server as server
+    from gensrt.api import ocr
 
     monkeypatch.setattr("gensrt.translation.factory.get_engine",
                         lambda key, config=None: object())
-    monkeypatch.setattr(server, "_ocr_translator_cache", {})
+    monkeypatch.setattr(ocr, "_ocr_translator_cache", {})
 
-    a = server._get_ocr_translator({"translation_engine": "nllb",
+    a = ocr._get_ocr_translator({"translation_engine": "nllb",
                                     "translation_model": "one"}, "nllb")
-    b = server._get_ocr_translator({"translation_engine": "nllb",
+    b = ocr._get_ocr_translator({"translation_engine": "nllb",
                                     "translation_model": "two"}, "nllb")
     assert a is not b
 

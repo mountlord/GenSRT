@@ -147,7 +147,7 @@ def test_a_failing_vad_never_fails_the_chunk(monkeypatch):
 
 def test_cli_and_gui_expose_the_switch():
     from gensrt.cli import _build_parser
-    from gensrt.server import _validate_config_patch
+    from gensrt.api.config import _validate_config_patch
 
     assert _build_parser().parse_args(["--input", "v.mkv"]).snap_onsets is None
     assert _build_parser().parse_args(["--input", "v.mkv", "--no-snap-onsets"]).snap_onsets is False

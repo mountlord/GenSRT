@@ -56,7 +56,7 @@ DEFAULT_GPU_ID: int = 0
 # ---------------------------------------------------------------------------
 # Number of real phases reported by run_pipeline(): extract → transcribe →
 # translate → write.  Used as the denominator for progress(current, total)
-# callbacks.  Both pipeline.py and server.py import this so the value cannot
+# callbacks.  Both pipeline.py and api/_state.py import this so the value cannot
 # drift between them.
 PIPELINE_PHASES: int = 4
 

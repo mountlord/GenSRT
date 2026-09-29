@@ -191,7 +191,7 @@ def test_no_vad_remains_a_synonym_for_fixed():
 
 
 def test_chunk_mode_is_saveable_and_validated():
-    from gensrt.server import _validate_config_patch
+    from gensrt.api.config import _validate_config_patch
 
     assert not _validate_config_patch({"chunk_mode": "fixed"})[1]
     assert "chunk_mode" in _validate_config_patch({"chunk_mode": "sometimes"})[1]
@@ -700,7 +700,7 @@ def test_report_writes_txt_and_json(tmp_path):
 
 def test_cli_report_dir_maps_to_the_config_key():
     from gensrt.cli import _build_parser
-    from gensrt.server import _validate_config_patch
+    from gensrt.api.config import _validate_config_patch
 
     args = _build_parser().parse_args(["--input", "v.mkv", "--heuristics-report-dir", "D:/r"])
     assert args.heuristics_report_out == "D:/r"

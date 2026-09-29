@@ -3,7 +3,7 @@
   "output_filename": null,
   "recurse": false,
   "log_level": "INFO",
-  "model": "kotoba-tech/kotoba-whisper-v2.0-faster",
+  "model": "large-v3-turbo",
   "device": "auto",
   "compute_type": "auto",
   "gpu_id": 0,
@@ -12,9 +12,9 @@
   "vad_threshold": 0.35,
   "vad_min_speech_ms": 250,
   "vad_min_silence_ms": 2000,
-  "vad_speech_pad_ms": 150,
-  "max_subtitle_duration_s": 10,
-  "min_subtitle_duration_s": 1,
+  "vad_speech_pad_ms": 0,
+  "max_subtitle_duration_s": 4,
+  "min_subtitle_duration_s": 2,
   "translation_engine": "madlad",
   "translate": true,
   "backend": "cuda",
@@ -26,5 +26,7 @@
   "max_chunk_s": 6,
   "min_chunk_s": 2,
   "asr_engine": "chunked",
-  "madlad_model": "olob0/madlad400-3b-mt-ct2-int8_float16"
+  "madlad_model": "olob0/madlad400-3b-mt-ct2-int8_float16",
+  "chunk_mode": "vad",
+  "snap_onsets": true
 }

@@ -146,10 +146,12 @@ BUILTIN_HEURISTICS: dict[str, Any] = {
                    "always_collapse": [], "drop": [], "hallucination": [],
                    # A 6-hour Korean stream produced "See you in the next
                    # video." 37 times, "Thank you for watching." and a
-                   # subtitle credit — Whisper's Korean YouTube sign-offs,
-                   # over silence.  These are the sources behind them.
+                   # subtitle credit ("Korean subtitles by …", 5×) —
+                   # Whisper's Korean YouTube sign-offs, over silence.
+                   # These are the sources behind them.
                    "hallucination_contains": ["다음 영상에서", "시청해주셔서 감사",
-                                              "시청해 주셔서 감사", "구독과 좋아요"]},
+                                              "시청해 주셔서 감사", "구독과 좋아요",
+                                              "한글자막"]},
             "ml": {"enabled": True, "always_collapse": [], "drop": [], "hallucination": [],
                    "hallucination_contains": []},
         },
