@@ -69,7 +69,6 @@ updateButtonStates();
 // SRT click and sends them with /api/transcribe as per-job overrides.
 
 const ENGINE_LABELS = {
-  google:      'Google (GTX)',
   nllb:        'NLLB (offline)',
   madlad:      'MADLAD-400 (offline)',
   passthrough: 'None (skip translation)',
@@ -455,18 +454,24 @@ async function callDetectAPI() {
         // transcription runs in a background thread and progress flows via
         // /api/operation_status (server-progress mode below).
         const srtPath = msg && msg.output ? String(msg.output) : null;
+        // A file that went out in the SOURCE language is not a success the
+        // user should discover by reading the subtitles.
+        const notTranslated = msg && msg.translation_error
+          ? `<br><br><b>NOT TRANSLATED</b> — subtitles are in the source language.<br>` +
+            `<span style="font-family: var(--font-mono);">${String(msg.translation_error)}</span>`
+          : '';
         if (srtPath && typeof window.gensrtLoadSrtFromPath === 'function') {
           const ok = await window.gensrtLoadSrtFromPath(srtPath, { quiet: true });
           if (ok) {
-            showProgressSuccess('SRT Generated',
-              `Loaded: <span style="font-family: var(--font-mono);">${srtPath}</span>`);
+            showProgressSuccess(notTranslated ? 'SRT Generated — NOT translated' : 'SRT Generated',
+              `Loaded: <span style="font-family: var(--font-mono);">${srtPath}</span>${notTranslated}`);
             return;
           }
         }
-        showProgressSuccess('SRT Generated',
-          srtPath
+        showProgressSuccess(notTranslated ? 'SRT Generated — NOT translated' : 'SRT Generated',
+          (srtPath
             ? `Saved to <span style="font-family: var(--font-mono);">${srtPath}</span>`
-            : 'Transcription complete.');
+            : 'Transcription complete.') + notTranslated);
       },
       'Transcribing...',
       { useServerProgress: true, operationKind: 'transcribe' }

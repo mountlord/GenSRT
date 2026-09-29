@@ -356,3 +356,36 @@ def test_dead_gpu_still_degrades_to_cpu_with_warning(tmp_path, monkeypatch, capl
     with caplog.at_level(logging.WARNING, logger="gensrt.translation.nllb_ct2"):
         engine._load()
     assert any("GPU unavailable" in r.message for r in caplog.records)
+
+
+# ── Output cleaning (v1.3.0) ──────────────────────────────────────────────
+
+@pytest.mark.parametrize("raw,clean", [
+    ("I &apos;m going to massage from the neckline .", "I'm going to massage from the neckline."),
+    ("It &apos;s great .", "It's great."),
+    ("You can &apos;t see anything from my angle .", "You can't see anything from my angle."),
+    ("&quot;Hello&quot; , she said !", '"Hello", she said!'),
+    ("Rock &amp; roll", "Rock & roll"),
+    ("What ?  Really ?", "What? Really?"),
+    ("Already clean.", "Already clean."),
+    ("", ""),
+])
+def test_nllb_output_entities_and_tokeniser_spacing_are_cleaned(raw, clean):
+    """Measured: 181 of 1,702 cues in one NLLB run carried HTML entities
+    and space-before-punctuation, spread evenly through the file — the
+    model reproducing its training corpora, not a fallback engine."""
+    from gensrt.translation._clean import clean_mt_output
+
+    assert clean_mt_output(raw) == clean
+
+
+def test_decode_applies_the_cleaner():
+    from gensrt.translation.nllb_ct2 import NLLBCT2Engine
+
+    eng = NLLBCT2Engine(None)
+
+    class _Tok:
+        def token_to_id(self, p): return 1
+        def decode(self, ids, skip_special_tokens=True): return "I &apos;m fine ."
+    eng._tokenizer = _Tok()
+    assert eng._decode(["x"]) == "I'm fine."

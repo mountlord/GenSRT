@@ -25,7 +25,7 @@ class TranslationEngine(ABC):
             source_language: ISO 639-1 language code (e.g. ``"ja"``, ``"ko"``).
             target_language: ISO 639-1 language code for the desired output
                              language.  Defaults to English.  Both
-                             translating engines (``google`` and ``nllb``)
+                             translating engines (``nllb`` and ``madlad``)
                              honour non-English targets.
 
         Returns:
@@ -40,8 +40,8 @@ class TranslationEngine(ABC):
 
         Default implementation calls :meth:`translate` per item with per-item
         error handling so one bad segment never aborts the whole batch.
-        Engines with native batch support (e.g. Google GTX glue-string,
-        tokeniser) should override this.
+        Engines with native batch support (the CTranslate2 engines batch
+        at the tokeniser) should override this.
 
         Args:
             texts:           List of texts to translate.

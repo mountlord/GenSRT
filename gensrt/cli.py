@@ -27,7 +27,7 @@ from pathlib import Path
 
 from gensrt import __version__
 from gensrt.models import TranscriptionConfig
-from gensrt.translation.factory import ENGINE_KEYS, FALLBACK_KEYS
+from gensrt.translation.factory import ENGINE_KEYS
 
 logger = logging.getLogger(__name__)
 
@@ -169,25 +169,13 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=list(ENGINE_KEYS),
         default=None,
         help=f"Translation engine (default: {bd['translation_engine']!r}). "
-             "'google' uses the Google GTX endpoint (any target language, "
-             "needs a network connection); 'madlad' runs MADLAD-400 offline "
+             "'madlad' runs MADLAD-400 offline "
              "and is Apache-2.0 so commercial use is fine (one-time ~2.9 GB "
              "download, roughly twice the per-cue cost of nllb); "
              "'nllb' runs NLLB-200 fully "
              "offline on this machine (one-time ~650 MB model download; "
              "the model weights are CC-BY-NC-4.0 — non-commercial use "
              "only, see README); 'none' transcribes without translating.",
-    )
-    tr.add_argument(
-        "--translation-fallback",
-        dest="translation_fallback",
-        choices=list(FALLBACK_KEYS),
-        default=None,
-        help=f"What to do when a Google batch fails, e.g. on rate limiting "
-             f"(default: {bd['translation_fallback']!r}). 'nllb' translates "
-             f"the failed batch offline; 'mymemory' is the old low-quality "
-             f"web fallback; 'none' keeps the source text. Only meaningful "
-             f"with --translation-engine google.",
     )
     tr.add_argument(
         "--source-language",
@@ -292,6 +280,32 @@ def _build_parser() -> argparse.ArgumentParser:
         help="End of the range to scan (default: end of video).",
     )
 
+    chunk = parser.add_argument_group(
+        "chunked inference",
+        "Applies when --asr-engine chunked (the default for fine-tunes).",
+    )
+    chunk.add_argument(
+        "--chunk-mode",
+        dest="chunk_mode",
+        choices=["vad", "fixed"],
+        default=None,
+        help="vad: decode only the regions silero-VAD calls speech (default). "
+             "fixed: decode the WHOLE file and use VAD only to choose cut "
+             "points. Recovers whispered speech and speech under "
+             "vocalisation that silero drops — measured 2.5x more speech on "
+             "such material — at several times the decode time. Chunk bounds "
+             "default to 5-8 s in fixed mode.",
+    )
+
+    chunk.add_argument(
+        "--no-snap-onsets",
+        dest="snap_onsets",
+        action="store_const", const=False, default=None,
+        help="Fixed mode: keep the model's own cue starts instead of moving "
+             "cues to the audible onset (on by default; Whisper stamps lone "
+             "short utterances at the window start, 2-4 s early).",
+    )
+
     vad = parser.add_argument_group("voice activity detection")
     vad.add_argument(
         "--no-vad",
@@ -369,6 +383,24 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Path to gensrt-config.json (default: auto-discover).",
     )
     cfg.add_argument(
+        "--heuristics-report",
+        dest="heuristics_report",
+        action="store_true",
+        help="After each file, print what the post-ASR rules acted on: each "
+             "short string the model produced, how often, what it means in "
+             "the target language, and whether it was dropped or collapsed. "
+             "For deciding what to add to gensrt-heuristics.json without "
+             "reading the source script.",
+    )
+    cfg.add_argument(
+        "--init-heuristics",
+        dest="init_heuristics",
+        action="store_true",
+        help="Write the built-in gensrt-heuristics.json (post-ASR rules such "
+             "as interjection collapse) next to the config for editing, "
+             "then exit.",
+    )
+    cfg.add_argument(
         "--init-config",
         action="store_true",
         default=False,
@@ -413,6 +445,15 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     diag = parser.add_argument_group("diagnostics")
+    diag.add_argument(
+        "--heuristics-report-dir",
+        dest="heuristics_report_out",
+        metavar="DIR",
+        default=None,
+        help="Write the heuristics report to DIR/<name>.heuristics.txt and "
+             ".json (all rows) instead of only printing it. Pairs with "
+             "--dump-segments.",
+    )
     diag.add_argument(
         "--dump-segments",
         dest="dump_segments",
@@ -536,8 +577,6 @@ def _print_banner(config: TranscriptionConfig) -> None:
     print(f"  Device : {config.device} ({config.backend})", file=sys.stderr)
     print(f"  Compute: {config.compute_type}", file=sys.stderr)
     print(f"  Engine : {config.translation_engine}", file=sys.stderr)
-    if config.translate and config.translation_engine == "google":
-        print(f"  Fallbk : {config.translation_fallback}", file=sys.stderr)
     print(f"  VAD    : {'on' if config.vad_enabled else 'off'}", file=sys.stderr)
     print("═" * 60, file=sys.stderr)
     print("", file=sys.stderr)
@@ -603,6 +642,7 @@ def _run_headless(args: argparse.Namespace) -> int:
 
     # Process each file
     errors = 0
+    untranslated = 0
     t0 = time.perf_counter()
 
     for i, media_path in enumerate(media_files, 1):
@@ -629,13 +669,24 @@ def _run_headless(args: argparse.Namespace) -> int:
         progress_cb, pbar_holder = _make_tqdm_progress()
 
         try:
-            run_transcription(
+            result = run_transcription(
                 input_path=media_path,
                 output_path=out_path,
                 config=config,
                 progress=progress_cb,
                 status=_cli_status,
             )
+            if getattr(result, "translation_error", None):
+                untranslated += 1
+                print(f"\n  ** NOT TRANSLATED: {media_path.name}\n     {result.translation_error}\n",
+                      file=sys.stderr)
+            if getattr(args, "heuristics_report", False):
+                rep = getattr(result, "heuristics_report", None)
+                if rep is not None and rep.rows:
+                    print("\n" + rep.as_text() + "\n", file=sys.stderr)
+                elif rep is not None:
+                    print("\n  Heuristics report: no short strings to report.\n",
+                          file=sys.stderr)
         except GenSRTError as exc:
             logger.error("Error processing %s: %s", media_path.name, exc)
             errors += 1
@@ -650,7 +701,9 @@ def _run_headless(args: argparse.Namespace) -> int:
     print(f"\n{'═' * 60}", file=sys.stderr)
     print(
         f"  Finished {len(media_files)} file(s) in {total_time:.1f}s "
-        f"({errors} error(s))",
+        f"({errors} error(s)"
+        + (f", {untranslated} written UNTRANSLATED" if untranslated else "")
+        + ")",
         file=sys.stderr,
     )
     print(f"{'═' * 60}\n", file=sys.stderr)
@@ -775,6 +828,12 @@ def main(argv: list[str] | None = None) -> None:
     # Early logging setup (before config is fully resolved)
     setup_logging(_resolve_log_level(args))
 
+    if getattr(args, "init_heuristics", False):
+        from gensrt.heuristics import write_default_heuristics
+        path = write_default_heuristics()
+        print(f"Default heuristics written: {path}", file=sys.stderr)
+        sys.exit(0)
+
     # ── --init-config ──────────────────────────────────────────────────────
     if args.init_config:
         from gensrt.config import generate_default_config
@@ -789,6 +848,8 @@ def main(argv: list[str] | None = None) -> None:
         args.debug_chunk_dir = args.debug_chunks
     if getattr(args, "dump_segments", None):
         args.dump_segments_dir = args.dump_segments
+    if getattr(args, "heuristics_report_out", None):
+        args.heuristics_report_dir = args.heuristics_report_out
 
     if getattr(args, "self_check", False):
         from gensrt.selfcheck import run_self_check

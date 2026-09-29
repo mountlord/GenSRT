@@ -180,19 +180,15 @@ def test_model_present_needs_weights_and_a_tokenizer(tmp_path, monkeypatch):
 
 # ── Pipeline pre-download ─────────────────────────────────────────────────
 
-@pytest.mark.parametrize("engine,fallback,expected", [
-    ("madlad", "none",     "madlad"),
-    ("nllb",   "none",     "nllb"),
-    ("google", "madlad",   "madlad"),
-    ("google", "nllb",     "nllb"),
-    ("google", "mymemory", None),
-    ("none",   "nllb",     None),
+@pytest.mark.parametrize("engine,expected", [
+    ("madlad", "madlad"),
+    ("nllb",   "nllb"),
+    ("none",   None),
 ])
-def test_offline_engine_needed(engine, fallback, expected):
+def test_offline_engine_needed(engine, expected):
     from gensrt.pipeline import _offline_engine_needed
 
-    cfg = TranscriptionConfig(translate=True, translation_engine=engine,
-                              translation_fallback=fallback)
+    cfg = TranscriptionConfig(translate=True, translation_engine=engine)
     assert _offline_engine_needed(cfg) == expected
 
 

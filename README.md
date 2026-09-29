@@ -11,7 +11,7 @@
 
 <p align="center">
   <b>GPU-accelerated subtitle generation for Windows.</b><br/>
-  Transcribe video to SRT using OpenAI Whisper, translate any-to-any — online or fully offline — edit cues in a built-in player.
+  Transcribe video to SRT using OpenAI Whisper, translate any-to-any fully offline, edit cues in a built-in player.
 </p>
 
 ---
@@ -21,7 +21,7 @@
 GenSRT generates SRT subtitle files from video using GPU-accelerated speech recognition, with built-in editing and any-to-any translation. The target use cases are serious subtitle work — content creators, fan subtitlers, accessibility teams, researchers working with non-English media.
 
 - **Transcribe.** Drop a video file, pick a language (or auto-detect), generate an SRT. Built-in support for OpenAI Whisper sizes (`tiny` through `large-v3-turbo`) plus any HuggingFace-compatible faster-whisper model — including community fine-tunes for specific languages.
-- **Translate.** Translate the generated SRT to any of 100+ languages — via Google Translate, or fully offline with NLLB-200 running on your own GPU/CPU. Translation preserves original timestamps, and what happens when Google rate-limits you is configurable (offline fallback by default).
+- **Translate.** Translate the generated SRT to any of 100+ languages, fully offline, with NLLB-200 or MADLAD-400 running on your own GPU/CPU. No API, no rate limits; translation preserves original timestamps.
 - **Edit.** Built-in player with live subtitle display. Split, merge, delete, and edit cues with immediate feedback in the player. Save to disk as SRT and WebVTT in one operation.
 
 <p align="center">
@@ -34,11 +34,21 @@ GenSRT generates SRT subtitle files from video using GPU-accelerated speech reco
   </sub>
 </p>
 
+## What's new in v1.3.0 (in development)
+
+- **Google Translate removed.** The unofficial GTX endpoint blocks IPs that translate at subtitle volumes, and the block outlasts an IP change by months. Both remaining engines run offline; `translation_fallback` and its MyMemory option went with it. A leftover `"google"` in an old config gets an explanatory error, not a crash.
+- **MADLAD-400 as a second offline engine** (`translation_engine: "madlad"`) — Apache-2.0, so commercial use is fine. ~2.9 GB and roughly twice NLLB's per-cue cost; see [Offline translation](#offline-translation).
+- **OCR: Read Frame and Extract Subtitles** — read the burned-in text on a paused frame into a cue, or extract a whole film's burned-in subtitles into an SRT (with translation). RapidOCR/PP-OCR on onnxruntime; models download per language on first use.
+- **Fixed-window chunking** (`--chunk-mode fixed`) — decode the whole file in 5–8 s windows with no voice detector in front, for soft speech and speech under other vocal sounds that VAD drops categorically. On one test film: 21.6 → 54.9 minutes of recovered speech.
+- **Cues start when the speaker does** — in fixed-window mode Whisper stamps a lone short utterance at the window start, 2–4 s early; a low-threshold onset pass now moves such cues to the audible onset.
+- **Post-ASR heuristics** in a user-editable `gensrt-heuristics.json` — per-language interjection collapse, drop and hallucination lists, a density rule for lexicalised vocalisation, and subject-pronoun stripping for pro-drop languages. `--heuristics-report` shows what each rule did, with translations, so you can tune it without reading the source language.
+- **One CUDA installer for Pascal and newer.** The separate Pascal build is retired: CTranslate2 ≥ 4.6.3 no longer needs cuDNN for Whisper, so GTX 10-series and Tesla P4/P40/P100 run the standard CUDA build (int8).
+- **Translation output cleaning** — NLLB sometimes reproduces HTML entities and tokeniser spacing from its training data (`I &apos;m going … .`); both engines' output is now normalised.
+
 ## What's new in v1.2.7
 
 - **Offline translation via NLLB-200 on CTranslate2** — no network, no rate limits, one-time ~650 MB model download, zero new dependencies. Non-commercial model license; see [Offline translation (NLLB)](#offline-translation-nllb).
-- **Configurable Google failure handling** (`translation_fallback`: `nllb` / `mymemory` / `none`) — failed batches no longer silently degrade to MyMemory, and a run with failures logs one summary line instead of one warning per batch.
-- **Rate-limit-aware Google GTX** — HTTP 429/503 now back off on a longer ladder (honouring `Retry-After`), and batch requests are paced to avoid provoking the throttle in the first place.
+- Configurable Google failure handling and rate-limit-aware Google GTX — *superseded: Google was removed in v1.3.0.*
 - **Chunked inference on any model, with tunable sizes** — force `--asr-engine chunked` (or `longform`) on any model, and tune `max_chunk_s` / `min_chunk_s`. See [Chunked vs. long-form inference](#chunked-vs-long-form-inference).
 - **Short utterances are no longer lost** — the chunker silently discarded speech regions under 2 seconds; on one test film that was 47% of everything the voice detector found. They are now transcribed whole.
 - **Add button in the SRT editor** — start a subtitle file from scratch. Available only while the list is empty; once lines exist, Split places a new line anywhere, including gaps.
@@ -122,32 +132,34 @@ Where to set the engine: `--asr-engine chunked` / `longform` / `auto` on the CLI
 
 > **Quiet or breathy speech?** The voice detector's defaults are tuned for clear dialogue and will skip soft speech entirely. Lower the threshold and widen the padding — e.g. `--vad-threshold 0.20 --vad-speech-pad-ms 300 --vad-min-speech-ms 150` recovered ~30% more speech on quiet test material.
 
-## Offline translation (NLLB)
+## Offline translation
 
-Since v1.2.7 GenSRT can translate **fully offline** using [NLLB-200](https://huggingface.co/facebook/nllb-200-distilled-600M) (No Language Left Behind, Meta AI) running on CTranslate2 — the same runtime that runs Whisper. One multilingual model covers every language in GenSRT's dropdowns, in any direction, with no API, no network dependency and no rate limits. The model (~650 MB) downloads once, automatically, at the start of the first run that needs it, into the same `models/` directory your Whisper models use.
+GenSRT translates **fully offline** on CTranslate2 — the same runtime that runs Whisper — with a choice of two models. Either one covers every language in GenSRT's dropdowns, in any direction, with no API, no network dependency and no rate limits. The chosen model downloads once, automatically, at the start of the first run that needs it, into the same `models/` directory your Whisper models use.
 
-By default NLLB is the **fallback**: Google GTX remains the primary translator, and any batch Google fails — most commonly HTTP 429 once the endpoint starts rate-limiting your IP, which sustained heavy use (nightly batches of long recordings) reliably provokes — is translated offline instead. To skip Google entirely, set `"translation_engine": "nllb"` in `gensrt-config.json` or pass `--translation-engine nllb`.
+| `translation_engine` | Model | Download | Speed | Model license |
+|---|---|---|---|---|
+| `nllb` (default) | [NLLB-200 distilled 600M](https://huggingface.co/facebook/nllb-200-distilled-600M) (Meta AI) | ~650 MB | 1× | CC-BY-NC-4.0 — **non-commercial only** |
+| `madlad` | [MADLAD-400 3B](https://huggingface.co/google/madlad400-3b-mt) (Google) | ~2.9 GB | ~½× | Apache-2.0 — commercial use fine |
+| `none` | — | — | — | transcribe only |
+
+Which reads better is a judgement about your material — on the same Japanese film each had lines the other handled worse — so GenSRT offers both rather than choosing. Set it in `gensrt-config.json`, the Configuration editor (⚙️), or `--translation-engine nllb|madlad|none`.
+
+> **Why no online engine?** Until v1.3.0 GenSRT translated through the unofficial Google Translate endpoint. It rate-limits by IP, a subtitling workload is exactly what provokes it, and the block was observed to survive an IP change and persist for months. That is not an engine a tool can depend on, so it was removed along with its MyMemory per-cue fallback and the `translation_fallback` setting.
 
 ### License notice — read this if your use is commercial
 
 The NLLB-200 model **weights** are licensed **[CC-BY-NC-4.0](https://creativecommons.org/licenses/by-nc/4.0/)** by Meta: **non-commercial use only**. This restriction travels with the weights regardless of who converted or hosts them, and it applies to *your use of the model*, not to GenSRT itself (which remains AGPL-3.0 and does not bundle the weights — they download from HuggingFace on first use). GenSRT logs a reminder of this every time the NLLB engine loads.
 
-GenSRT does not interpret what counts as "commercial" — that is Meta's license text. If your subtitling work is commercial, opt out:
-
-```json
-"translation_fallback": "none"
-```
-
-(or `"mymemory"`), and leave `translation_engine` on `"google"`. With `"none"`, batches that Google fails keep their source text and the run summarises how many were affected. We are exploring a permissively-licensed offline alternative (M2M100, MIT) for a future release.
+GenSRT does not interpret what counts as "commercial" — that is Meta's license text. If your subtitling work is commercial, use MADLAD-400 (`"translation_engine": "madlad"`, Apache-2.0) or `"none"`.
 
 ### Choosing the model
 
-`translation_model` in the config selects which NLLB conversion to use — a HuggingFace repo ID (downloaded once into `models/`), a folder name under `models/`, or a full path. The default is a community int8 conversion of the official distilled-600M checkpoint; it loads as `int8_float16` on CUDA and `int8` on CPU, mirroring how GenSRT loads Whisper models.
+`translation_model` selects which NLLB conversion to use and `madlad_model` which MADLAD conversion — each a HuggingFace repo ID (downloaded once into `models/`), a folder name under `models/`, or a full path. The defaults are community int8 conversions; they load as `int8_float16` on CUDA and `int8` on CPU, mirroring how GenSRT loads Whisper models. Pascal-era GPUs (GTX 10-series, Tesla P4) fall back to `int8` automatically.
 
 ## Requirements
 
 - **Windows 10 or Windows 11**
-- **Recommended:** NVIDIA GPU with CUDA support (~2 GB VRAM is enough for vegam; ~4 GB for `large-v3-turbo`)
+- **Recommended:** NVIDIA GPU with CUDA support (~2 GB VRAM is enough for vegam; ~4 GB for `large-v3-turbo`). Pascal cards (GTX 10-series, Tesla P4/P40/P100) work with the same installer, in int8; running MADLAD alongside Whisper wants 8 GB.
 - **Also works on CPU** (Intel/AMD, including integrated graphics like Intel Arc) — GenSRT falls back automatically when no CUDA GPU is detected
 - Internet connection for first-run model download
 
@@ -181,14 +193,14 @@ If your machine has 8 GB of RAM, prefer medium-sized models. A medium model in i
 ## Features
 
 - **Use models you converted yourself** — drop a CTranslate2 model into `models\` next to `gensrt.exe` and enter the folder name
-- **Translate to any language** — `--target-language ko` (or `ja`, `hi`, `fr`…), or pick a target in the Config panel. Google Translate online, or NLLB-200 fully offline.
+- **Translate to any language** — `--target-language ko` (or `ja`, `hi`, `fr`…), or pick a target in the Config panel. NLLB-200 or MADLAD-400, fully offline.
 - **Plug-in any HuggingFace Whisper model** — add custom faster-whisper-compatible models via the GUI's Model selector or the `--model` CLI argument.
 - **Chunked or long-form inference on any model** — forceable and tunable; see [Chunked vs. long-form inference](#chunked-vs-long-form-inference).
 - **WebVTT alongside SRT** — every generation writes both `.srt` and `.vtt` so the output works in HTML5 `<video>` elements natively.
 - **Live in-player subtitle display** while editing — Add, Split, Merge, Delete, and text edits show in the player immediately.
 - **Burn-in subtitles** — bake subtitles into a copy of the video with one click; runs in the background.
 - **Bundled ffmpeg** — no separate install required on target machines.
-- **Any-to-any translation** — Korean → Malayalam, Japanese → Tamil, Spanish → Hindi, all supported via Google Translate.
+- **Any-to-any translation** — Korean → Malayalam, Japanese → Tamil, Spanish → Hindi, all offline.
 - **Plex / Jellyfin / Kodi compatible** filename suffixes for SRT output.
 - **Self-contained `user_guide.html`** shipped alongside the executable.
 

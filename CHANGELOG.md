@@ -1,5 +1,26 @@
 # Changelog
 
+## v1.3.0 — in development
+
+### Removed
+- **The separate Pascal installer** (`-Variant pascal`, `requirements-cuda-pascal.txt`, the second venv). It existed because cuDNN ≥ 9.11 refuses compute-capability-6.x GPUs; CTranslate2 ≥ 4.6.3 no longer routes Whisper's convolutions through cuDNN, so the standard CUDA build runs on GTX 10-series / Tesla P4-P40-P100 unchanged (verified on a Tesla P4 with cuDNN 9.24, int8). `ctranslate2>=4.6.3` is now pinned and the packager refuses to build with an older one.
+- **Google GTX translation engine** (`translation_engine: "google"`), its MyMemory per-cue fallback, and the `translation_fallback` config field / `--translation-fallback` flag. The unofficial endpoint blocks IPs that translate at subtitle volumes, and the block was observed to survive an IP change and persist for months. Both remaining engines (`nllb`, `madlad`) run offline; the default is now `nllb`. A leftover `"google"` in an older config produces an explanatory `ConfigError`; a leftover `translation_fallback` key is ignored on load.
+
+### Added
+- **MADLAD-400 offline translation engine** (`translation_engine: "madlad"`, `madlad_model`): Apache-2.0 weights, ~2.9 GB, roughly twice NLLB's per-cue cost. Offered beside NLLB because which reads better depends on the material.
+- **OCR**: Read Frame (paused-frame text → cue) and Extract Subtitles (burned-in subtitles across a whole video → SRT, with translation) via RapidOCR/PP-OCR on onnxruntime. `--extract-subtitles` on the CLI.
+- **Fixed-window chunk mode** (`chunk_mode: "fixed"` / `--chunk-mode fixed`): decode the whole file in 5–8 s windows with no outer voice detector, for soft speech and speech under other vocal sounds.
+- **Onset snapping in fixed-window mode** (`snap_onsets`, `--no-snap-onsets` to disable): Whisper stamps a lone short utterance `0.00→2.00` wherever it sits in the window, so cues appeared 2–4 s early (560 of 1,293 on one file). A low-threshold silero pass now finds the audible onset in each chunk and moves such cues to it, duration preserved.
+- `heuristics_report_dir` / `--heuristics-report-dir DIR`: write the heuristics report to `<name>.heuristics.txt` and `.json` per file, all rows.
+- Heuristics: `hallucination_contains` per language (substring match, for sign-off phrases that arrive in variants) — `ja` ships `ご視聴`, `ko` ships the "see you in the next video" / "thanks for watching" / "like and subscribe" sources; the report gains a **Repeated lines** table for full sentences that recur, with translations, which the short-string table could not show.
+- **Post-ASR heuristics** (`gensrt-heuristics.json`, `--init-heuristics`, `--heuristics-report`): per-language interjection collapse, drop and hallucination lists, a density rule, and post-translation subject-pronoun stripping for pro-drop source languages when the target is English.
+- Configuration editor can save every config field (the validator now derives its choices from the engine factory instead of a hand-kept table).
+
+### Fixed
+- **Out-of-memory handling on small GPUs** (measured on a Tesla P4, 8 GB, MADLAD-400 3B + large-v3-turbo). A translation batch that hit CUDA OOM used to write the file *untranslated* behind a one-line warning; the engines now halve the token batch down to 128 and then reload on CPU before giving up, and a file that still goes out untranslated is an ERROR in the log, a status line, a `translation_error` on the result, a `NOT TRANSLATED` line in the CLI summary and a flagged dialog in the GUI. Whisper's loader, on CUDA OOM, now releases the resident translation engine and retries the GPU once before falling back to CPU. Translation runs in 64-cue slices so a retry redoes a slice, not the file; the engine remembers the batch size that held; the Whisper model is released explicitly (not at the next GC pass) and the run logs GPU memory after each release.
+- A registered monolingual model given a different source language (kotoba-whisper with `--source-lang ko`) now stops with a `ConfigError` before any work, instead of emitting Japanese for Korean audio and translating it. kotoba-whisper v1.0/v2.0 are now in the monolingual registry (Japanese), so they also get chunked inference and the language lock automatically.
+- NLLB output sometimes carried HTML entities and tokeniser spacing from its training corpora (`I &apos;m going … .`); both offline engines' output is now normalised (`html.unescape`, punctuation and clitic spacing).
+
 ## v1.2.7 — 2026-08-24
 
 ### Added

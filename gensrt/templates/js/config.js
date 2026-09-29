@@ -56,6 +56,22 @@ const configSchema = {
       type: 'checkbox',
       hint: 'Filter silence before transcription.  Recommended.',
     },
+    'chunk_mode': {
+      type: 'select',
+      options: ['vad', 'fixed'],
+      hint: 'vad: decode only the regions silero-VAD calls speech. ' +
+            'fixed: decode the whole file and use VAD only to choose cut ' +
+            'points — recovers whispered speech and speech under ' +
+            'vocalisation that silero drops entirely (measured 2.5x more ' +
+            'speech on such material) at several times the decode time. ' +
+            'Short interjection cues are collapsed by gensrt-heuristics.json.',
+    },
+    'snap_onsets': {
+      type: 'checkbox',
+      hint: 'Fixed mode only: move a cue to the audible onset when the model ' +
+            'stamped it at the start of its window (Whisper does this for ' +
+            'lone short utterances, putting the cue 2-4 s early).',
+    },
     'max_chunk_s': {
       type: 'number', min: 1, max: 30, step: 0.5,
       hint: 'Chunked inference: longest allowed chunk (seconds).  6 suits ' +
@@ -108,21 +124,12 @@ const configSchema = {
     },
     'translation_engine': {
       type: 'select',
-      options: ['google', 'nllb', 'madlad', 'none'],
-      hint: 'Default translation backend.  google needs a network connection; ' +
-            'nllb runs fully offline (one-time ~650 MB download; weights are ' +
+      options: ['nllb', 'madlad', 'none'],
+      hint: 'Translation backend — both run fully offline. ' +
+            'nllb (one-time ~650 MB download; weights are ' +
             'CC-BY-NC-4.0 — non-commercial only, see README); madlad also runs ' +
             'offline and is Apache-2.0 (commercial use fine) but is ~2.9 GB ' +
             'and about twice as slow per cue; none skips translation.',
-    },
-    'translation_fallback': {
-      type: 'select',
-      options: ['nllb', 'madlad', 'mymemory', 'none'],
-      hint: 'What to do when a Google batch fails (e.g. rate limiting). ' +
-            'nllb translates the failed batch offline (non-commercial ' +
-            'license, see README); mymemory is the old low-quality web ' +
-            'fallback; none keeps the source text.  Only applies when the ' +
-            'engine is google.',
     },
     // Model pickers rather than blank text boxes. An empty text field posted
     // "" and was rejected as "must be a non-empty string", which left

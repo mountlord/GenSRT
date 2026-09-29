@@ -1,0 +1,145 @@
+{
+  "_comment": "GenSRT post-processing rules. Edit freely; unknown keys are ignored. Delete this file to return to the built-in defaults.",
+  "interjections": {
+    "enabled": true,
+    "max_chars": 3,
+    "window_s": 6.0,
+    "max_span_s": 3.0,
+    "languages": {
+      "ja": {
+        "enabled": true,
+        "always_collapse": [
+          "気持ちいい"
+        ],
+        "drop": [
+          "ああ",
+          "あっ",
+          "うっ",
+          "お",
+          "ん",
+          "はあ",
+          "あ"
+        ],
+        "hallucination": [
+          "ごめん",
+          "すごい",
+          "ごちそう",
+          "ご視聴ありがとうございました"
+        ],
+        "hallucination_contains": [
+          "ご視聴"
+        ]
+      },
+      "ko": {
+        "enabled": true,
+        "max_chars": 2,
+        "always_collapse": [],
+        "drop": [],
+        "hallucination": [],
+        "hallucination_contains": [
+          "다음 영상에서",
+          "시청해주셔서 감사",
+          "시청해 주셔서 감사",
+          "구독과 좋아요",
+		  "한글자막"
+        ]
+      },
+      "ml": {
+        "enabled": true,
+        "always_collapse": [],
+        "drop": [],
+        "hallucination": [],
+        "hallucination_contains": []
+      }
+    },
+    "always_collapse": [],
+    "drop": [],
+    "hallucination": [],
+    "hallucination_contains": []
+  },
+  "density": {
+    "enabled": true,
+    "min_count": 4,
+    "window_s": 30.0
+  },
+  "subject": {
+    "enabled": true,
+    "languages": {
+      "ja": {
+        "enabled": true,
+        "explicit_subjects": [
+          "私",
+          "わたし",
+          "僕",
+          "ぼく",
+          "俺",
+          "おれ",
+          "あたし",
+          "自分",
+          "あなた",
+          "貴方",
+          "君",
+          "きみ",
+          "お前",
+          "おまえ",
+          "あんた",
+          "彼",
+          "彼女",
+          "うち",
+          "みんな",
+          "皆"
+        ]
+      },
+      "ml": {
+        "enabled": true,
+        "explicit_subjects": [
+          "ഞാൻ",
+          "ഞങ്ങൾ",
+          "നമ്മൾ",
+          "നമുക്ക്",
+          "എനിക്ക്",
+          "എന്റെ",
+          "നീ",
+          "നിങ്ങൾ",
+          "നിനക്ക്",
+          "താൻ",
+          "തനിക്ക്",
+          "അവൻ",
+          "അവൾ",
+          "അവർ",
+          "അയാൾ",
+          "അദ്ദേഹം",
+          "അത്"
+        ]
+      },
+      "ko": {
+        "enabled": true,
+        "explicit_subjects": [
+          "나",
+          "내가",
+          "저",
+          "제가",
+          "우리",
+          "저희",
+          "너",
+          "네가",
+          "당신",
+          "니가",
+          "그",
+          "그녀",
+          "그들"
+        ]
+      }
+    },
+    "en_strip": [
+      "I",
+      "You",
+      "We",
+      "It",
+      "I'm",
+      "You're",
+      "We're",
+      "It's"
+    ]
+  }
+}

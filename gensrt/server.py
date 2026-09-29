@@ -524,9 +524,9 @@ def api_transcribe():
             "input_path":         "/path/to/media.mkv",   // required
             "output_dir":         "/path/to/output/",     // optional
             "output_filename":    "custom.srt",           // optional
-            "translation_engine": "google",               // optional
+            "translation_engine": "nllb",                 // optional
             "source_language":    "auto",                 // optional
-            "target_language":    "en",                   // optional; non-en only with engine="google"
+            "target_language":    "en",                   // optional
             "no_translate":       false,                  // optional
             "no_vad":             false,                  // optional
             "model":              "large-v3-turbo",       // optional
@@ -615,15 +615,17 @@ def api_transcribe():
     response_data: dict[str, Any]
     status_code = 200
     try:
-        run_transcription(
+        result = run_transcription(
             input_path=input_path,
             output_path=output_path,
             config=config,
             progress=_make_progress_cb(),
             status=_make_status_cb(),
         )
+        translation_error = getattr(result, "translation_error", None)
         _update_active_operation(
-            message=f"Complete — {output_path.name}",
+            message=(f"Complete — {output_path.name}" if not translation_error
+                     else f"Complete but NOT TRANSLATED — {output_path.name}"),
             current=PIPELINE_PHASES,
             total=PIPELINE_PHASES,
         )
@@ -631,6 +633,7 @@ def api_transcribe():
             "status": "ok",
             "input":  str(input_path),
             "output": str(output_path),
+            "translation_error": translation_error,
         }
     except Exception as exc:
         logger.exception("Transcription failed: %s", exc)
@@ -669,10 +672,8 @@ _BACKEND_CHOICES = {"cuda", "rocm", "xpu", "cpu"}
 # key") because the dataclass grew and this did not. Importing the key tuples
 # is cheap — factory.py imports the engines themselves lazily.
 from gensrt.translation.factory import ENGINE_KEYS as _TR_ENGINE_KEYS
-from gensrt.translation.factory import FALLBACK_KEYS as _TR_FALLBACK_KEYS
 
 _ENGINE_CHOICES = set(_TR_ENGINE_KEYS)
-_FALLBACK_CHOICES = set(_TR_FALLBACK_KEYS)
 #: "auto" lets the OCR path pick an offline engine for interactive latency.
 _OCR_ENGINE_CHOICES = {"auto", *_TR_ENGINE_KEYS}
 _LOG_LEVEL_CHOICES = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
@@ -751,12 +752,13 @@ _CONFIG_VALIDATORS = {
     "max_line_chars":          _v_num_range(0, 200, integer=True),
     "max_lines":               _v_num_range(1, 10, integer=True),
     "translation_engine":      _v_str_in(_ENGINE_CHOICES),
-    "translation_fallback":    _v_str_in(_FALLBACK_CHOICES),
     "translation_model":       _v_model_ref,
     "madlad_model":            _v_model_ref,
     "translate":               _v_bool,
     "target_language":         _v_str,
     # Chunked inference (v1.2.7)
+    "chunk_mode":              _v_str_in({"vad", "fixed"}),
+    "snap_onsets":             _v_bool,
     "max_chunk_s":             _v_num_range(1.0, 60.0),
     "min_chunk_s":             _v_num_range(0.0, 30.0),
     # On-screen text recognition
@@ -774,6 +776,7 @@ _CONFIG_VALIDATORS = {
     # the config UI: it is an investigation tool, not a user setting.
     "debug_chunk_dir":         _v_str,
     "dump_segments_dir":       _v_str,
+    "heuristics_report_dir":   _v_str,
 }
 
 
@@ -1649,9 +1652,8 @@ def api_burn():
 # 2. IT IS A HANDFUL OF SHORT STRINGS.  Six subtitle fragments do not need
 #    the best available translator badly enough to pay a round trip for.
 #
-# So "auto" prefers an already-configured OFFLINE engine when there is one,
-# and only falls through to Google when there is nothing local to use.
-# Setting ocr_translation_engine explicitly overrides all of this.
+# So "auto" follows translation_engine (both remaining engines are offline);
+# setting ocr_translation_engine explicitly overrides it.
 _ocr_translator_cache: dict = {}
 _ocr_translator_lock = threading.Lock()
 
@@ -1662,17 +1664,7 @@ def _resolve_ocr_engine_key(cfg: dict) -> str:
     if key and key != "auto":
         return key
 
-    primary = str(cfg.get("translation_engine") or "google").strip().lower()
-    if primary != "google":
-        return primary          # already offline, or "none"
-
-    # Google is primary. If an offline fallback is configured, it is going to
-    # handle this request anyway the moment Google 429s — so go straight
-    # there and skip the ladder.
-    fallback = str(cfg.get("translation_fallback") or "").strip().lower()
-    if fallback == "nllb":
-        return "nllb"
-    return primary
+    return str(cfg.get("translation_engine") or "nllb").strip().lower()
 
 
 def _get_ocr_translator(cfg: dict, key: str):
@@ -1688,8 +1680,8 @@ def _get_ocr_translator(cfg: dict, key: str):
 
     cache_key = (
         key,
-        str(cfg.get("translation_fallback") or ""),
         str(cfg.get("translation_model") or ""),
+        str(cfg.get("madlad_model") or ""),
         str(cfg.get("device") or ""),
     )
     with _ocr_translator_lock:

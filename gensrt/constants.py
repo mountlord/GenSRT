@@ -37,7 +37,7 @@ VAD_ENABLED_DEFAULT: bool = True
 # ---------------------------------------------------------------------------
 # Translation
 # ---------------------------------------------------------------------------
-DEFAULT_TRANSLATION_ENGINE: str = "google"
+DEFAULT_TRANSLATION_ENGINE: str = "nllb"
 
 # ---------------------------------------------------------------------------
 # Audio extraction

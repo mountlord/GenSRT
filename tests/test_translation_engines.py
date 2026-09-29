@@ -1,16 +1,16 @@
-"""The translation engine roster, as of v1.2.7.
+"""The translation engine roster, as of v1.3.0.
 
 History matters here.  v1.2.5 removed the torch-based offline engines
 (NLLB-on-transformers and MarianMT): each dragged in ~2.5 GB of PyTorch,
 could only produce English, and neither was ever confirmed working.  v1.2.7
-brings NLLB *back* — on CTranslate2 this time, sharing the runtime Whisper
-already uses, with any mapped target language and zero new dependencies.
+brought NLLB *back* on CTranslate2 and added MADLAD-400 beside it.  v1.3.0
+removed Google GTX: the endpoint blocks IPs that translate at subtitle
+volumes and the block outlives an IP change, so the engine, its MyMemory
+per-cue fallback and ``translation_fallback`` all went.
 
-So the roster is: google, nllb, none.  Marian stays removed, and a leftover
-``"marian"`` in an old config still gets an explanation rather than a bare
-"unknown engine".  The old torch-based module paths must stay gone — the
-new engine lives at ``gensrt.translation.nllb_ct2``, deliberately a
-different name so nothing can half-import the old world.
+So the roster is: nllb, madlad, none — all offline.  A leftover ``"google"``
+or ``"marian"`` in an old config gets an explanation rather than a bare
+"unknown engine".  The old module paths must stay gone.
 """
 
 from __future__ import annotations
@@ -25,21 +25,18 @@ from gensrt.translation.factory import available_engines, get_engine
 
 # ── The roster ────────────────────────────────────────────────────────────
 
-def test_roster_is_google_nllb_none():
-    assert {e.value for e in TranslationEngineKey} == {"google", "nllb", "none"}
-    assert set(available_engines()) == {"google", "nllb", "none"}
-
-
-def test_google_resolves():
-    assert get_engine("google").name == "google-gtx"
+def test_roster_matches_the_factory():
+    """Written as a fixed set before MADLAD existed; it must follow the enum."""
+    expected = {"nllb", "madlad", "none"}
+    assert {e.value for e in TranslationEngineKey} == expected
+    assert set(available_engines()) == expected
 
 
 def test_nllb_resolves_without_loading_the_model():
     """Construction must be cheap: no download, no model load, no network.
 
-    The factory builds an NLLB instance whenever the fallback is 'nllb' —
-    which is the default — so an expensive constructor would tax every
-    translating run whether or not the fallback ever fires.
+    The factory builds the engine at validation time, before any audio
+    work, so an expensive constructor would tax every run.
     """
     engine = get_engine("nllb")
     assert engine.name == "nllb"
@@ -54,50 +51,34 @@ def test_none_is_passthrough():
 
 # ── Config plumbing ───────────────────────────────────────────────────────
 
-def test_google_engine_receives_configured_fallback():
-    config = TranscriptionConfig(translation_fallback="none")
-    engine = get_engine("google", config)
-    assert engine._fallback == "none"
+def test_default_engine_is_nllb():
+    assert TranscriptionConfig().translation_engine == "nllb"
 
 
-def test_google_default_fallback_without_config_is_mymemory():
-    """Direct construction (tests, scripts) keeps pre-v1.2.7 behaviour."""
-    assert get_engine("google")._fallback == "mymemory"
-
-
-def test_config_default_fallback_is_nllb_with_factory_injected():
-    config = TranscriptionConfig()
-    assert config.translation_fallback == "nllb"
-    engine = get_engine("google", config)
-    assert engine._fallback == "nllb"
-    assert engine._fallback_engine_factory is not None
-    # And the injection is lazy: nothing constructed yet.
-    assert engine._fallback_engine is None
-
-
-def test_unknown_fallback_is_a_config_error():
-    config = TranscriptionConfig(translation_fallback="deepl")
-    with pytest.raises(ConfigError) as exc:
-        get_engine("google", config)
-    assert "translation_fallback" in str(exc.value)
-
-
-def test_validate_translation_config_checks_fallback_too():
-    config = TranscriptionConfig(translation_fallback="bogus")
-    with pytest.raises(ConfigError):
-        validate_translation_config(config)
+def test_config_no_longer_has_a_fallback_field():
+    assert not hasattr(TranscriptionConfig(), "translation_fallback")
+    with pytest.raises(TypeError):
+        TranscriptionConfig(translation_fallback="none")
 
 
 # ── What stays removed ────────────────────────────────────────────────────
 
-@pytest.mark.parametrize("removed", ["marian", "Marian"])
-def test_marian_explains_itself(removed):
+@pytest.mark.parametrize("removed,version", [
+    ("marian", "v1.2.5"), ("Marian", "v1.2.5"),
+    ("google", "v1.3.0"), ("Google", "v1.3.0"),
+])
+def test_removed_engines_explain_themselves(removed, version):
     """A leftover config must get an explanation, not 'unknown engine'."""
     with pytest.raises(ConfigError) as exc:
         get_engine(removed)
     msg = str(exc.value)
-    assert "removed in v1.2.5" in msg
-    assert "google" in msg and "none" in msg and "nllb" in msg
+    assert f"removed in {version}" in msg
+    assert "madlad" in msg and "none" in msg and "nllb" in msg
+
+
+def test_google_module_stays_gone():
+    with pytest.raises(ImportError):
+        __import__("gensrt.translation.google_gtx")
 
 
 def test_genuinely_unknown_engine_still_errors():
@@ -116,10 +97,7 @@ def test_old_torch_engine_modules_stay_gone():
 
 def test_validation_noop_when_not_translating():
     validate_translation_config(
-        TranscriptionConfig(
-            translate=False, translation_engine="deepl",
-            translation_fallback="bogus",
-        )
+        TranscriptionConfig(translate=False, translation_engine="deepl")
     )
 
 
@@ -143,22 +121,13 @@ def test_cli_accepts_nllb_engine():
     assert args.translation_engine == "nllb"
 
 
-def test_cli_exposes_translation_fallback():
+def test_cli_no_longer_accepts_the_fallback_flag_or_google():
     from gensrt.cli import _build_parser
 
-    args = _build_parser().parse_args(
-        ["--input", "v.mkv", "--translation-fallback", "none"]
-    )
-    assert args.translation_fallback == "none"
-
-
-def test_cli_rejects_unknown_fallback():
-    from gensrt.cli import _build_parser
-
-    with pytest.raises(SystemExit):
-        _build_parser().parse_args(
-            ["--input", "v.mkv", "--translation-fallback", "deepl"]
-        )
+    for argv in (["--input", "v.mkv", "--translation-fallback", "none"],
+                 ["--input", "v.mkv", "--translation-engine", "google"]):
+        with pytest.raises(SystemExit):
+            _build_parser().parse_args(argv)
 
 
 def test_target_language_reaches_the_config():
@@ -169,11 +138,51 @@ def test_target_language_reaches_the_config():
     assert build_transcription_config(merged).target_language == "ko"
 
 
-def test_fallback_and_model_reach_the_config():
+def test_stale_fallback_key_in_an_old_config_file_is_ignored():
+    """merge_config only carries keys the dataclass knows, so an upgraded
+    install with translation_fallback still in gensrt-config.json runs."""
     from gensrt.config import merge_config
     from gensrt.operations import build_transcription_config
 
-    merged = merge_config({}, {"translation_fallback": "none", "device": "cpu"})
+    merged = merge_config({"translation_fallback": "nllb"}, {"device": "cpu"})
+    assert "translation_fallback" not in merged
     built = build_transcription_config(merged)
-    assert built.translation_fallback == "none"
     assert built.translation_model    # default flows through non-empty
+
+
+# ── Shared engine (v1.3.0) ────────────────────────────────────────────────
+
+def test_shared_engine_is_one_instance_per_model_and_device():
+    from gensrt.translation.factory import clear_shared_engines, get_shared_engine
+
+    clear_shared_engines()
+    a = get_shared_engine("nllb", TranscriptionConfig(device="cpu"))
+    b = get_shared_engine("nllb", TranscriptionConfig(device="cpu"))
+    c = get_shared_engine("nllb", TranscriptionConfig(device="cpu", translation_model="other/model"))
+    d = get_shared_engine("madlad", TranscriptionConfig(device="cpu"))
+    assert a is b and a is not c and a is not d
+    clear_shared_engines()
+    assert get_shared_engine("nllb", TranscriptionConfig(device="cpu")) is not a
+
+
+def test_pipeline_translation_and_report_share_one_engine(monkeypatch, tmp_path):
+    """MADLAD was loaded twice per file — once to translate, once for the
+    report — and never freed between files."""
+    import gensrt.pipeline as pl
+    from gensrt.translation import factory
+
+    built = []
+
+    class _E:
+        def translate_batch(self, texts, s, t):
+            return [f"en:{x}" for x in texts]
+
+    monkeypatch.setattr(factory, "get_engine", lambda key, cfg: (built.append(key), _E())[1])
+    factory.clear_shared_engines()
+    cfg = TranscriptionConfig(device="cpu", translation_engine="madlad", target_language="en")
+    from gensrt.models import SRTSegment
+    segs = [SRTSegment(index=1, start=0, end=1, text="ごめん")]
+    pl._maybe_translate(segs, "ja", cfg, True)
+    pl._maybe_translate(segs, "ja", cfg, True)
+    assert built == ["madlad"]
+    factory.clear_shared_engines()

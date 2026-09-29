@@ -46,7 +46,7 @@ def validate_translation_config(config: TranscriptionConfig) -> None:
     Retained as the single place engine/fallback/target compatibility is
     checked, and called before any expensive work runs — an invalid key
     should surface here, not after the audio extract and model load.  Both
-    translating engines (Google GTX and NLLB) handle any mapped target
+    translating engines (NLLB and MADLAD) handle any mapped target
     language.
     """
     if not config.translate:
@@ -54,13 +54,37 @@ def validate_translation_config(config: TranscriptionConfig) -> None:
     if config.translation_engine.lower() == "none":
         return
 
-    # Resolving the engine validates the engine key AND the fallback key
-    # (the factory wires translation_fallback into the Google engine);
-    # get_engine raises ConfigError with an actionable message for removed
-    # or unknown values.
+    # Resolving the engine validates the key; get_engine raises ConfigError
+    # with an actionable message for removed or unknown values.
     from gensrt.translation.factory import get_engine
 
     get_engine(config.translation_engine, config)
+
+
+def validate_model_language(config: TranscriptionConfig) -> None:
+    """Refuse a source language a registered monolingual model cannot produce.
+
+    A Japanese-only fine-tune handed Korean audio does not fail: it emits
+    plausible Japanese, the translator renders that into fluent English, and
+    four broadcasts' worth of subtitles are fiction before anyone notices.
+    The registry knows the model's language; when the user names a
+    different one, stop before the audio extract.  ``auto`` is fine — the
+    engine substitutes the registered language itself.
+    """
+    from gensrt.asr.factory import get_known_language_for_model
+
+    known = get_known_language_for_model(config.model)
+    requested = (config.source_language or "auto").strip().lower()
+    if known is None or requested in ("", "auto"):
+        return
+    if requested.split("-")[0] != known:
+        raise ConfigError(
+            f"Model {config.model!r} is a {known!r}-only fine-tune and cannot "
+            f"transcribe source language {requested!r}: it would emit {known!r} "
+            f"text for whatever it hears, and the translator would translate "
+            f"that. Use a multilingual model (e.g. large-v3-turbo) for "
+            f"{requested!r}, or set the source language to {known!r}."
+        )
 
 
 def validate_chunking_config(config: TranscriptionConfig) -> None:
@@ -89,19 +113,13 @@ def validate_chunking_config(config: TranscriptionConfig) -> None:
 def _offline_engine_needed(config: TranscriptionConfig) -> str | None:
     """Which offline translation engine this run could call, if any.
 
-    Returns ``"nllb"``, ``"madlad"`` or ``None``. True in the same two
-    situations for either engine: it is the primary engine, or Google is
-    primary and it is the batch-failure fallback.
+    Returns ``"nllb"``, ``"madlad"`` or ``None``.
     """
     if not config.translate:
         return None
     engine = (config.translation_engine or "").lower()
     if engine in ("nllb", "madlad"):
         return engine
-    if engine == "google":
-        fallback = (config.translation_fallback or "").lower()
-        if fallback in ("nllb", "madlad"):
-            return fallback
     return None
 
 
@@ -125,18 +143,11 @@ def ensure_translation_model(
     job (where a stalled fetch or a flaky connection would fail the file
     *after* transcription had already spent its time).
 
-    Degradation is deliberately asymmetric:
-
-    * NLLB as the *primary* engine and unavailable → raise.  The user asked
-      for offline translation; silently doing something else would be worse
-      than stopping.
-    * NLLB as the *fallback* and unavailable → warn once and continue with
-      ``translation_fallback="none"``.  The run can still succeed entirely
-      via Google; the fallback quality degrades to keeping originals.
+    An unavailable model raises: the user asked for offline translation by
+    name, and silently doing something else would be worse than stopping.
 
     Returns:
-        *config*, possibly with the fallback downgraded (the dataclass is
-        frozen, so degradation produces a new instance).
+        *config*, unchanged (kept as a return value for the call sites).
     """
     which = _offline_engine_needed(config)
     if which is None:
@@ -149,17 +160,8 @@ def ensure_translation_model(
         from gensrt.translation.nllb_ct2 import ensure_model
         model_ref = config.translation_model
 
-    try:
-        ensure_model(model_ref, status=status)
-        return config
-    except Exception as exc:
-        if config.translation_engine.lower() in ("nllb", "madlad"):
-            raise
-        logger.warning(
-            "%s fallback model unavailable (%s) — failed Google batches "
-            "will keep their source text for this run.", which.upper(), exc,
-        )
-        return replace(config, translation_fallback="none")
+    ensure_model(model_ref, status=status)
+    return config
 
 
 def run_pipeline(
@@ -198,6 +200,7 @@ def run_pipeline(
     # honour, before any expensive work (audio extract / model load) runs.
     validate_translation_config(config)
     validate_chunking_config(config)
+    validate_model_language(config)
 
     # Fetch the offline translation model up front (one-time), alongside —
     # not instead of — whatever Whisper model download the run may trigger.
@@ -257,6 +260,18 @@ def run_pipeline(
                 Path(config.dump_segments_dir) / f"{input_path.stem}.segments.csv",
             )
 
+        # ── Phase 2b: Post-ASR heuristics ────────────────────────────────
+        # After the dump (so it records the model's raw output) and before
+        # translation (so a run of 221 identical "ああ" cues is not sent
+        # through the translator 221 times).
+        from gensrt.heuristics import load_heuristics, run_heuristics, strip_subjects
+
+        heuristics = load_heuristics()
+        raw_segments = list(srt_segments)          # for the run report
+        srt_segments, heuristics_stats = run_heuristics(
+            srt_segments, heuristics, detected_language
+        )
+
         # ── Phase 3: Translation ──────────────────────────────────────────
         # Normalize "english" → "en" so faster-whisper's occasional name-form
         # output compares correctly to ISO codes in the target.
@@ -275,12 +290,35 @@ def run_pipeline(
             )
         progress(2, PIPELINE_PHASES)
 
+        source_texts = [seg.text for seg in srt_segments]   # positional pairing
+        _TRANSLATION_FAILURE.clear()
         srt_segments = _maybe_translate(
             segments=srt_segments,
             detected_language=detected_language,
             config=config,
             should_translate=should_translate,
         )
+
+        # ── Phase 3b: post-translation heuristics ────────────────────────
+        # Pro-drop source + English target: strip the subject the translator
+        # invented, when the source line names none.  Needs the source text
+        # beside the translation, so it lives here and not in Phase 2b.
+        translation_error = _TRANSLATION_FAILURE[0] if _TRANSLATION_FAILURE else None
+        if translation_error:
+            status("TRANSLATION FAILED — subtitles written in the source language.")
+        if should_translate and not translation_error:
+            subject_rules = heuristics.subject_for(detected_language, config.target_language)
+            srt_segments, n_subj, subj_examples = strip_subjects(
+                source_texts, srt_segments, subject_rules
+            )
+            heuristics_stats.subject_stripped = n_subj
+            heuristics_stats.subject_examples = subj_examples
+            if n_subj:
+                logger.info(
+                    "Heuristics [subject/%s]: stripped the leading subject pronoun "
+                    "from %d line(s) whose source names no subject",
+                    subject_rules.language, n_subj,
+                )
 
         # ── Phase 4: Write SRT (+ VTT companion) ──────────────────────────
         status("Writing SRT…")
@@ -342,6 +380,35 @@ def run_pipeline(
     )
     status(f"Done ({elapsed:.1f}s) — {len(srt_segments)} subtitles written.")
 
+    # The run report pairs the model's raw short strings with their
+    # translations so a user who cannot read the source script can still
+    # decide what to drop.  Strings the rules dropped never reached the
+    # translator, so the report fetches those few itself when an engine is
+    # configured.  Never allowed to fail the run.
+    report = None
+    try:
+        from gensrt.heuristics import build_report
+
+        translate_fn = None
+        if should_translate:
+            def translate_fn(texts, _det=detected_language):
+                from gensrt.translation.factory import get_shared_engine
+
+                # Same instance the translation used: no second model load.
+                engine = get_shared_engine(config.translation_engine, config)
+                return engine.translate_batch(list(texts), _det, config.target_language)
+
+        report = build_report(
+            raw_segments, srt_segments, heuristics.for_language(detected_language),
+            translate=translate_fn, source_path=heuristics.source_path,
+            stats=heuristics_stats,
+        )
+        if report is not None and getattr(config, "heuristics_report_dir", ""):
+            txt, _js = report.write(Path(config.heuristics_report_dir), input_path.stem)
+            logger.info("Heuristics report written: %s", txt)
+    except Exception as exc:
+        logger.debug("Heuristics report not built: %s", exc)
+
     return TranscriptionResult(
         input_path=input_path,
         output_path=output_path,
@@ -349,6 +416,8 @@ def run_pipeline(
         segments=srt_segments,
         config=config,
         elapsed_s=elapsed,
+        heuristics_report=report,
+        translation_error=translation_error,
     )
 
 
@@ -391,6 +460,11 @@ def _run_asr(
     return engine.transcribe(wav_path, config, status=status)
 
 
+# Set by _maybe_translate when a file goes out untranslated; read and cleared
+# by run_pipeline so the failure lands on the TranscriptionResult.
+_TRANSLATION_FAILURE: list[str] = []
+
+
 def _maybe_translate(
     segments: list[SRTSegment],
     detected_language: str,
@@ -415,8 +489,8 @@ def _maybe_translate(
     if not should_translate:
         return segments
 
-    from gensrt.translation.factory import get_engine
-    engine = get_engine(config.translation_engine, config)
+    from gensrt.translation.factory import get_shared_engine
+    engine = get_shared_engine(config.translation_engine, config)
 
     texts = [seg.text for seg in segments]
     try:
@@ -424,9 +498,15 @@ def _maybe_translate(
             texts, detected_language, config.target_language
         )
     except Exception as exc:
-        logger.warning(
-            "translate_batch failed (%s) — keeping all originals.", exc
+        # The engines already walked their own fallbacks (smaller batches,
+        # CPU).  Reaching here means the file is going out UNTRANSLATED, and
+        # that must not hide behind a warning: log at ERROR and record it on
+        # the result so the CLI summary and the GUI can say so.
+        logger.error(
+            "TRANSLATION FAILED for this file (%s) — subtitles are being "
+            "written in the SOURCE language.", exc,
         )
+        _TRANSLATION_FAILURE.append(str(exc))
         translated_texts = texts
 
     return [

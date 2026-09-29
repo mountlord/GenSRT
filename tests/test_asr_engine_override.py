@@ -92,3 +92,36 @@ def test_server_validator_accepts_the_choices():
         assert ok, good
     ok, msg = v("nonsense")
     assert not ok and "chunked" in msg
+
+
+# ── Model/language mismatch guard (v1.3.0) ────────────────────────────────
+
+def test_kotoba_is_registered_as_japanese_only():
+    from gensrt.asr.factory import get_known_language_for_model
+
+    assert get_known_language_for_model("kotoba-tech/kotoba-whisper-v2.0-faster") == "ja"
+    assert get_known_language_for_model("kotoba-tech/kotoba-whisper-v1.0") == "ja"
+    assert get_known_language_for_model("kotoba-tech/kotoba-whisper-bilingual-v1.0") is None
+
+
+@pytest.mark.parametrize("model,lang,ok", [
+    ("kotoba-tech/kotoba-whisper-v2.0-faster", "ko", False),   # the real case
+    ("kotoba-tech/kotoba-whisper-v2.0-faster", "ja", True),
+    ("kotoba-tech/kotoba-whisper-v2.0-faster", "ja-JP", True),
+    ("kotoba-tech/kotoba-whisper-v2.0-faster", "auto", True),  # engine substitutes ja
+    ("smcproject/vegam-whisper-medium-ml-int8_float16", "ko", False),
+    ("large-v3-turbo", "ko", True),                             # multilingual: anything
+    ("some/unregistered-model", "ko", True),                    # unknown: not our call
+])
+def test_registered_model_refuses_a_language_it_cannot_produce(model, lang, ok):
+    from gensrt.exceptions import ConfigError
+    from gensrt.models import TranscriptionConfig
+    from gensrt.pipeline import validate_model_language
+
+    cfg = TranscriptionConfig(model=model, source_language=lang)
+    if ok:
+        validate_model_language(cfg)
+    else:
+        with pytest.raises(ConfigError) as exc:
+            validate_model_language(cfg)
+        assert "large-v3-turbo" in str(exc.value) and lang in str(exc.value)

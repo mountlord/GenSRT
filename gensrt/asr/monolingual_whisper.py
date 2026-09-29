@@ -32,10 +32,13 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+from gensrt.asr._onset import OnsetStats, snap_to_onsets, speech_regions
 from gensrt.asr._silence_chunking import (
     DEFAULT_MAX_CHUNK_S,
     DEFAULT_MIN_CHUNK_S,
     plan_chunks,
+    FIXED_MAX_CHUNK_S,
+    FIXED_MIN_CHUNK_S,
     summarize_chunk_plan,
 )
 from gensrt.asr._chunk_debug import (
@@ -97,6 +100,20 @@ class MonolingualWhisperEngine(ASREngine):
         # ── Step 3: Plan chunks ──────────────────────────────────────────
         max_chunk_s = float(getattr(config, "max_chunk_s", None) or DEFAULT_MAX_CHUNK_S)
         min_chunk_s = float(getattr(config, "min_chunk_s", None) or DEFAULT_MIN_CHUNK_S)
+        fixed_mode = getattr(config, "chunk_mode", "vad") == "fixed" or not config.vad_enabled
+        if fixed_mode and (min_chunk_s, max_chunk_s) == (DEFAULT_MIN_CHUNK_S, DEFAULT_MAX_CHUNK_S):
+            # Where silero finds no silences — the whispered and vocalised
+            # stretches this mode exists for — the planner falls back to
+            # energy-minimum cuts near min_chunk_s.  On continuous audio the
+            # VAD-mode defaults (2/6) give a 4.5 s median, which starves the
+            # model of context.  5/8 measured a 6.4 s median.  Only applied
+            # when the user has not set the bounds themselves.
+            min_chunk_s, max_chunk_s = FIXED_MIN_CHUNK_S, FIXED_MAX_CHUNK_S
+            logger.info(
+                "[%s] Fixed-window mode: decoding the whole file; chunk bounds "
+                "%.0f-%.0f s (set --min-chunk-s/--max-chunk-s to override)",
+                self.name, min_chunk_s, max_chunk_s,
+            )
         chunks = plan_chunks(
             audio, sr, regions,
             max_chunk_s=max_chunk_s,
@@ -174,7 +191,10 @@ class MonolingualWhisperEngine(ASREngine):
         region covering the entire audio (so the chunker still gets a
         chance to break up long audio).
         """
-        if not config.vad_enabled:
+        # Fixed-window mode decodes everything: the whole file is one region
+        # and the inner ladder only chooses where to cut.  (vad_enabled=False
+        # is kept as a synonym for backward compatibility with --no-vad.)
+        if getattr(config, "chunk_mode", "vad") == "fixed" or not config.vad_enabled:
             duration_s = len(audio) / sr
             return [(0.0, duration_s)]
 
@@ -220,12 +240,23 @@ class MonolingualWhisperEngine(ASREngine):
         model = load_whisper_model(wav_path, config, WhisperModel, status=status)
 
         try:
-            return self._transcribe_chunks(
-                model, audio, sr, chunks, source_lang, wav_path,
-                config=config,
-                status=status,
-                debug_chunk_dir=getattr(config, "debug_chunk_dir", ""),
-            )
+            try:
+                return self._transcribe_chunks(
+                    model, audio, sr, chunks, source_lang, wav_path,
+                    config=config,
+                    status=status,
+                    debug_chunk_dir=getattr(config, "debug_chunk_dir", ""),
+                )
+            finally:
+                # Release the model NOW, not at the next GC pass: the
+                # translation model loads next and needs the room.
+                # Drop this frame's reference BEFORE collecting — the first
+                # cut collected while still holding it and logged 2,266 MiB
+                # of "released" model.
+                from gensrt.gpu_mem import release
+                if getattr(config, "device", "cuda") != "cpu":
+                    model = None
+                    release("Whisper model")
         except TranscriptionError:
             if getattr(config, "device", "cuda") == "cpu":
                 raise
@@ -320,6 +351,16 @@ class MonolingualWhisperEngine(ASREngine):
         # than skipping 43 chunks in a row and returning an empty subtitle
         # file — which is what GenSRT did before this guard existed.
         env_failure: Exception | None = None
+
+        # Fixed-window chunks are not speech-aligned, and for a lone short
+        # utterance Whisper stamps 0.00→2.00 wherever the word really sits
+        # (560 of 1,293 cues on one file).  Snap those to the audible onset.
+        # VAD-mode chunks already start within speech_pad_ms of speech.
+        snap_onsets = (
+            getattr(config, "chunk_mode", "vad") == "fixed"
+            and bool(getattr(config, "snap_onsets", True))
+        )
+        onset_stats = OnsetStats()
 
         # Single temp dir for all chunks of this job — auto-cleaned via with.
         with tempfile.TemporaryDirectory(prefix="gensrt_chunks_") as tmp_dir:
@@ -421,9 +462,18 @@ class MonolingualWhisperEngine(ASREngine):
                 # confidence-based and chunk-tail-based analysis possible
                 # downstream (see SRTSegment).
                 kept = [seg for seg in chunk_segments if seg.text.strip()]
-                for position, seg in enumerate(kept, start=1):
-                    abs_start = c_start + float(seg.start)
-                    abs_end = min(c_start + float(seg.end), c_end)
+                spans = [(float(seg.start), float(seg.end)) for seg in kept]
+                if snap_onsets and spans:
+                    try:
+                        regions = speech_regions(samples, sr)
+                        spans, st = snap_to_onsets(spans, regions, c_end - c_start)
+                        onset_stats.merge(st)
+                    except Exception as exc:      # never fail a chunk over timing
+                        logger.debug("Onset snap skipped on chunk %d: %s",
+                                     chunk_index_for_logging, exc)
+                for position, (seg, (loc_start, loc_end)) in enumerate(zip(kept, spans), start=1):
+                    abs_start = c_start + loc_start
+                    abs_end = min(c_start + loc_end, c_end)
                     all_cues.append((
                         abs_start,
                         abs_end,
@@ -441,6 +491,8 @@ class MonolingualWhisperEngine(ASREngine):
 
         log_timing_summary(records, self.name)
         recorder.finalize(wav_path.name)
+        if snap_onsets:
+            logger.info("[%s] %s", self.name, onset_stats.summary())
 
         n_failed = sum(1 for r in records if r.failed)
         if n_failed:

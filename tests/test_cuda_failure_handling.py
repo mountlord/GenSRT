@@ -277,3 +277,33 @@ def test_registration_never_raises_on_a_broken_path(monkeypatch, tmp_path):
     _cuda_dlls._registered = []
 
     assert _cuda_dlls.register_cuda_dll_directories() == []
+
+
+def test_cpu_fallback_warning_names_the_first_gpu_failure_not_the_last(caplog):
+    """On Pascal with compute=int8 the ladder is int8 → int8_float16 → CPU.
+    The second rung always fails with 'no efficient int8_float16', which
+    used to be the only cause printed — hiding what broke int8."""
+    import logging
+    from pathlib import Path
+    from gensrt.asr._model_loader import load_whisper_model
+    from gensrt.models import TranscriptionConfig
+
+    calls = []
+
+    def fake_model(ref, device, compute_type):
+        calls.append((device, compute_type))
+        if device == "cuda" and compute_type == "int8":
+            raise RuntimeError("CUDA failed with error out of memory")
+        if device == "cuda":
+            raise RuntimeError("Requested int8_float16 compute type, but the target device "
+                               "or backend do not support efficient int8_float16 computation.")
+        return object()
+
+    cfg = TranscriptionConfig(model="large-v3-turbo", device="cuda", compute_type="int8")
+    with caplog.at_level(logging.WARNING, logger="gensrt.asr._model_loader"):
+        load_whisper_model(Path("x.wav"), cfg, fake_model)
+    msgs = [r.message for r in caplog.records if "fell back to CPU" in r.message]
+    assert msgs, caplog.text
+    assert "cuda/int8: CUDA failed with error out of memory" in msgs[0]
+    assert "also tried int8_float16" in msgs[0]
+    assert calls == [("cuda", "int8"), ("cuda", "int8_float16"), ("cpu", "int8")]

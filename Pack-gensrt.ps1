@@ -3,11 +3,14 @@
 #
 # Run from the GenSRT project root with the venv activated:
 #
-#   .\Pack-gensrt.ps1                    # CUDA build (default; Turing and newer)
+#   .\Pack-gensrt.ps1                    # CUDA build (default; Pascal and newer)
 #   .\Pack-gensrt.ps1 -Variant cpu       # CPU-only build — much smaller
-#   .\Pack-gensrt.ps1 -Variant pascal    # CUDA build for Pascal GPUs (GTX 10 /
-#                                         # Tesla P4-P40-P100); build it from a
-#                                         # venv holding requirements-cuda-pascal.txt
+#
+# There is no longer a separate Pascal build.  It existed because cuDNN >= 9.11
+# refuses compute capability 6.x, but CTranslate2 >= 4.6.3 does not use cuDNN
+# for Whisper's convolutions, so one CUDA build covers GTX 10-series / Tesla
+# P4-P40-P100 as well (verified on a Tesla P4 with cuDNN 9.24).  The
+# ctranslate2 floor is pinned in requirements.txt and checked below.
 #
 # ─────────────────────────────────────────────────────────────────────────
 # Why there are two variants
@@ -35,20 +38,14 @@
 
 [CmdletBinding()]
 param(
-    [ValidateSet("cuda", "cpu", "pascal")]
+    [ValidateSet("cuda", "cpu")]
     [string]$Variant = "cuda"
 )
 
 $ErrorActionPreference = "Stop"
 
-# "pascal" is a CUDA build in every respect except which cuDNN it may ship:
-# cuDNN 9.12.0 dropped Pascal (compute capability 6.x), so the pascal
-# variant must be built from a venv holding a pre-9.12 cuDNN
-# (requirements-cuda-pascal.txt) and the default from one holding 9.12+.
-# The variant IS the cuDNN version — mismatches are refused below, exactly
-# as Tilester''s packager refuses a torch/CUDA-build mismatch.
 $isCuda = ($Variant -ne "cpu")
-$cudaReqFile = if ($Variant -eq "pascal") { "requirements-cuda-pascal.txt" } else { "requirements-cuda.txt" }
+$cudaReqFile = "requirements-cuda.txt"
 
 Write-Host ""
 Write-Host "========================================" -ForegroundColor Cyan
@@ -73,8 +70,8 @@ if (-not $pyinstallerCheck) {
 # PyInstaller bundles whatever is in the ACTIVE venv.  A venv that predates a
 # requirements.txt change therefore produces an installer that is missing
 # those packages — and nothing in the build says so.  That is exactly how a
-# venv-pascal created before OCR shipped produced a pascal installer whose
-# only symptom was "No module named 'cv2'" on the target machine.
+# stale venv created before OCR shipped produced an installer whose only
+# symptom was "No module named 'cv2'" on the target machine.
 #
 # Import-checking rather than pip-show-checking on purpose: import is what
 # PyInstaller and the packaged build actually do, and it catches a broken
@@ -147,31 +144,27 @@ if ($isCuda) {
         exit 1
     }
 
-    # The variant IS the cuDNN version — refuse to package a mismatch.
-    # (A pascal installer with cuDNN 9.12+ silently loses its entire reason
-    # to exist; a default installer built from the pascal venv ships an old
-    # cuDNN nobody intended.  Both are almost certainly wrong-venv mistakes.)
+    # One CUDA build covers Pascal only because CTranslate2 >= 4.6.3 stopped
+    # using cuDNN for Whisper's convolutions.  An older ctranslate2 in the
+    # venv would silently produce an installer that falls back to CPU on
+    # GTX 10-series / Tesla P4 cards — refuse to build it.
+    $ct2Ver = python -c "import ctranslate2; print(ctranslate2.__version__)" 2>$null
+    if (-not $ct2Ver) {
+        Write-Host "ERROR: ctranslate2 is not importable in this venv." -ForegroundColor Red
+        exit 1
+    }
+    $ct2Parts = $ct2Ver.Trim().Split(".") | ForEach-Object { [int]($_ -replace "[^0-9].*$", "") }
+    $ct2Ok = ($ct2Parts[0] -gt 4) -or ($ct2Parts[0] -eq 4 -and (($ct2Parts[1] -gt 6) -or ($ct2Parts[1] -eq 6 -and $ct2Parts[2] -ge 3)))
+    if (-not $ct2Ok) {
+        Write-Host ""
+        Write-Host "ERROR: ctranslate2 $ct2Ver is too old — 4.6.3+ is required so the CUDA build" -ForegroundColor Red
+        Write-Host "       runs on Pascal GPUs without cuDNN (see requirements.txt)." -ForegroundColor Red
+        Write-Host "Run:  pip install -U -r requirements.txt" -ForegroundColor Yellow
+        exit 1
+    }
     $cudnnVer = (python -m pip show nvidia-cudnn-cu12 2>$null |
                  Select-String "^Version:").ToString().Split(":")[1].Trim()
-    $cudnnMinor = [int]($cudnnVer.Split(".")[1])
-    $cudnnIsPascalCapable = ([int]($cudnnVer.Split(".")[0]) -eq 9 -and $cudnnMinor -lt 12)
-    if ($Variant -eq "pascal" -and -not $cudnnIsPascalCapable) {
-        Write-Host ""
-        Write-Host "ERROR: variant 'pascal' needs cuDNN < 9.12 (Pascal support was dropped in 9.12.0)," -ForegroundColor Red
-        Write-Host "       but this venv has cuDNN $cudnnVer." -ForegroundColor Red
-        Write-Host "Build from the pascal venv:  venv-pascal\Scripts\Activate.ps1" -ForegroundColor Yellow
-        Write-Host "Or set it up:  python -m venv venv-pascal ; venv-pascal\Scripts\pip install -r requirements.txt -r requirements-cuda-pascal.txt -e ." -ForegroundColor Yellow
-        exit 1
-    }
-    if ($Variant -eq "cuda" -and $cudnnIsPascalCapable) {
-        Write-Host ""
-        Write-Host "ERROR: variant 'cuda' expects cuDNN 9.12+, but this venv has cuDNN $cudnnVer" -ForegroundColor Red
-        Write-Host "       (a Pascal-capped version — this looks like the pascal venv)." -ForegroundColor Red
-        Write-Host "Either activate the default venv, or build what this venv is for:" -ForegroundColor Yellow
-        Write-Host "  .\Pack-gensrt.ps1 -Variant pascal" -ForegroundColor Yellow
-        exit 1
-    }
-    Write-Host "  cuDNN $cudnnVer matches variant '$Variant'" -ForegroundColor Green
+    Write-Host "  ctranslate2 $($ct2Ver.Trim()) (>= 4.6.3: Pascal covered), cuDNN $cudnnVer" -ForegroundColor Green
 }
 
 # ── Clean previous builds ──────────────────────────────────────────────────
@@ -523,8 +516,6 @@ $7zCheck = Get-Command 7z -ErrorAction SilentlyContinue
 if ($7zCheck) {
     if ($Variant -eq "cpu") {
         $installerName = "gensrt-install-cpu.exe"
-    } elseif ($Variant -eq "pascal") {
-        $installerName = "gensrt-install-pascal.exe"
     } else {
         $installerName = "gensrt-install.exe"
     }
@@ -563,10 +554,8 @@ Write-Host "    %USERPROFILE%\.cache\huggingface\hub" -ForegroundColor Gray
 if ($isCuda) {
     Write-Host "  - cuBLAS + cuDNN are bundled; an NVIDIA driver supporting" -ForegroundColor Gray
     Write-Host "    CUDA 12 is required on the target machine." -ForegroundColor Gray
-    if ($Variant -eq "pascal") {
-        Write-Host "  - PASCAL build (cuDNN < 9.12): GTX 10-series / Tesla P4-P40-P100." -ForegroundColor Gray
-        Write-Host "    These cards run int8 (no FP16); R580 is their last driver branch." -ForegroundColor Gray
-    }
+    Write-Host "  - Covers Pascal (GTX 10-series / Tesla P4-P40-P100) too: those cards" -ForegroundColor Gray
+    Write-Host "    run int8 (no FP16); R580 is their last driver branch." -ForegroundColor Gray
     Write-Host "  - If CUDA init fails at runtime, GenSRT falls back to CPU" -ForegroundColor Gray
     Write-Host "    with a warning rather than failing the job." -ForegroundColor Gray
 } else {

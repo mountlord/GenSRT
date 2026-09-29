@@ -44,6 +44,12 @@ logger = logging.getLogger(__name__)
 # Sorted by tier: lower-index = more reliable (less likely to land in
 # soft-but-still-speech).  When multiple tiers find a candidate, we prefer
 # the lowest-tier (most reliable) silence in the greedy-pack step.
+#: Chunk bounds used by fixed-window mode when the user has not set their
+#: own.  Larger than the VAD-mode defaults because in the stretches this mode
+#: recovers, silero finds no silences and cuts fall back toward the minimum.
+FIXED_MIN_CHUNK_S = 5.0
+FIXED_MAX_CHUNK_S = 8.0
+
 PROGRESSIVE_VAD_CONFIGS: tuple[tuple[float, int, int, str], ...] = (
     # Tier 0 — reliable: standard threshold, longer min_silence
     (0.40, 500, 100, "loose"),

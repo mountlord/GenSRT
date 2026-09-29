@@ -452,17 +452,14 @@ def test_successful_read_returns_the_documented_shape(client, monkeypatch):
 # ── Interactive translation policy and engine caching ────────────────────
 
 @pytest.mark.parametrize("cfg,expected,why", [
-    ({"translation_engine": "google", "translation_fallback": "nllb"}, "nllb",
-     "Google would 429 then fall back to NLLB anyway — skip the ~12s ladder"),
-    ({"translation_engine": "google", "translation_fallback": "mymemory"}, "google",
-     "no offline engine configured, so Google it is"),
-    ({"translation_engine": "nllb"}, "nllb", "already offline"),
+    ({"translation_engine": "nllb"}, "nllb", "auto follows the main engine"),
+    ({"translation_engine": "madlad"}, "madlad", "auto follows the main engine"),
     ({"translation_engine": "none"}, "none", "translation off"),
-    ({"translation_engine": "google", "translation_fallback": "nllb",
-      "ocr_translation_engine": "google"}, "google", "explicit override wins"),
-    ({}, "google", "empty config falls back to the built-in default"),
+    ({"translation_engine": "nllb", "ocr_translation_engine": "madlad"}, "madlad",
+     "explicit override wins"),
+    ({}, "nllb", "empty config falls back to the built-in default"),
 ])
-def test_ocr_engine_choice_favours_offline_for_interactive_latency(cfg, expected, why):
+def test_ocr_engine_choice_follows_the_configured_engine(cfg, expected, why):
     from gensrt.server import _resolve_ocr_engine_key
 
     assert _resolve_ocr_engine_key(cfg) == expected, why

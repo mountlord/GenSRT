@@ -2,12 +2,11 @@
 
 Why this exists
 ---------------
-Translation via the unofficial Google GTX endpoint is rate-limited by IP,
-and a nightly batch of multi-hour recordings — thousands of cues per file —
-is exactly the traffic pattern that gets an IP throttled for hours at a
-time.  Once that happens, every batch fails, the per-batch fallback fires
-thousands of times, and a 74-minute run spends 50 of those minutes waiting
-on a fallback service whose output quality was never acceptable anyway.
+GenSRT translated through the unofficial Google GTX endpoint until v1.3.0.
+That endpoint rate-limits by IP, and a nightly batch of multi-hour
+recordings — thousands of cues per file — is exactly the traffic pattern
+that gets an IP blocked; measured in practice, the block outlived an IP
+change and persisted for months.  Google GTX was removed in v1.3.0.
 
 The durable fix is to not need the network at all.  NLLB-200 (No Language
 Left Behind, Meta AI) is a single multilingual model covering 200 languages
@@ -38,8 +37,8 @@ weights*, not GenSRT (which remains AGPL-3.0).  GenSRT therefore:
   must exist at the point of use, not only in a README nobody reads;
 * documents the restriction and the opt-outs in README.md
   ("Offline translation (NLLB)");
-* keeps ``translation_fallback: "none"`` and ``"mymemory"`` available for
-  users whose work is commercial.
+* offers MADLAD-400 (Apache-2.0) as the engine for users whose work is
+  commercial.
 
 The notice states what the license says and nothing more.  What counts as
 "commercial" is Meta's license text, Meta's ambiguity — GenSRT does not
@@ -83,6 +82,8 @@ import threading
 from pathlib import Path
 
 from gensrt.exceptions import TranslationError
+from gensrt.translation._clean import clean_mt_output
+from gensrt.translation._oom import SLICE_CUES, translate_with_oom_ladder
 from gensrt.translation.base import TranslationEngine
 
 logger = logging.getLogger(__name__)
@@ -94,9 +95,8 @@ DEFAULT_MODEL = "mijuanlo/nllb-200-distilled-600M-ct2-int8"
 #: Logged at every engine load and at download time.  See module docstring.
 LICENSE_NOTICE = (
     "NLLB-200 weights are licensed CC-BY-NC-4.0 by Meta — non-commercial "
-    "use only. Commercial users: set translation_fallback (and, if set as "
-    "the primary engine, translation_engine) to another value. "
-    "See README, 'Offline translation (NLLB)'."
+    "use only. Commercial users: set translation_engine to \"madlad\" "
+    "(MADLAD-400, Apache-2.0). See README, 'Offline translation'."
 )
 
 #: Approximate one-time download size, for status messages.
@@ -334,9 +334,7 @@ def ensure_model(ref: str | None = None, *, status=None) -> Path:
 class NLLBCT2Engine(TranslationEngine):
     """Offline translation via NLLB-200 on CTranslate2.
 
-    Loading is lazy and happens once per instance: as the *primary* engine
-    the model loads on the first batch; as a *fallback* it loads only if
-    Google actually fails, so the healthy path pays nothing.
+    Loading is lazy and happens once per instance, on the first batch.
 
     Device selection mirrors the Whisper loader's philosophy: honour an
     explicit request, otherwise probe; degrade CUDA→CPU with a loud warning
@@ -360,6 +358,10 @@ class NLLBCT2Engine(TranslationEngine):
             getattr(config, "device", None) or "auto"
         ).strip().lower()
         self._translator = None      # ctranslate2.Translator, once loaded
+        # The token batch cap that last held on this device.  Starts at the
+        # class default; the OOM ladder lowers it and it stays lowered, so a
+        # small card walks the ladder once per process, not once per file.
+        self._batch_tokens: int = self._MAX_BATCH_TOKENS
         self._tokenizer = None       # tokenizers.Tokenizer, once loaded
         self._sp = None              # sentencepiece fallback, if ever used
         self._lock = threading.Lock()
@@ -400,19 +402,39 @@ class NLLBCT2Engine(TranslationEngine):
             return results
 
         sources = [self._encode(texts[i], src) for i in work_indices]
-        target_prefix = [[tgt]] * len(sources)
 
-        translations = self._translator.translate_batch(
-            sources,
-            target_prefix=target_prefix,
-            batch_type="tokens",
-            max_batch_size=self._MAX_BATCH_TOKENS,
-            beam_size=self._BEAM_SIZE,
-        )
+        for start in range(0, len(sources), SLICE_CUES):
+            chunk = sources[start:start + SLICE_CUES]
 
-        for i, tr in zip(work_indices, translations):
-            results[i] = self._decode(tr.hypotheses[0])
+            def _run(max_batch: int, _chunk=chunk):
+                return self._translator.translate_batch(
+                    _chunk,
+                    target_prefix=[[tgt]] * len(_chunk),
+                    batch_type="tokens",
+                    max_batch_size=max_batch,
+                    beam_size=self._BEAM_SIZE,
+                )
+
+            translations, self._batch_tokens = translate_with_oom_ladder(
+                _run, max_batch_tokens=self._batch_tokens,
+                move_to_cpu=self._move_to_cpu, engine_name="NLLB",
+            )
+            for i, tr in zip(work_indices[start:start + SLICE_CUES], translations):
+                results[i] = self._decode(tr.hypotheses[0])
         return results
+
+    def _move_to_cpu(self) -> None:
+        """Drop the GPU translator and reload on CPU (the OOM ladder's last rung)."""
+        import gc
+
+        import ctranslate2
+
+        with self._lock:
+            model_dir = ensure_model(self._model_ref)
+            self._translator = None
+            gc.collect()
+            self._translator = ctranslate2.Translator(str(model_dir), device="cpu", compute_type="int8")
+            logger.info("NLLB translator reloaded: %s (device=cpu, compute=int8)", model_dir.name)
 
     # -- Loading ----------------------------------------------------------
 
@@ -541,5 +563,5 @@ class NLLBCT2Engine(TranslationEngine):
         if self._tokenizer is not None:
             ids = [self._tokenizer.token_to_id(p) for p in pieces]
             ids = [i for i in ids if i is not None]
-            return self._tokenizer.decode(ids, skip_special_tokens=True).strip()
-        return self._sp.DecodePieces(pieces).strip()
+            return clean_mt_output(self._tokenizer.decode(ids, skip_special_tokens=True))
+        return clean_mt_output(self._sp.DecodePieces(pieces))

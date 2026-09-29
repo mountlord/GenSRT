@@ -36,7 +36,6 @@ class GPUBackend(Enum):
 class TranslationEngineKey(str, Enum):
     """Translation engine selector."""
 
-    GOOGLE = "google"
     NLLB = "nllb"
     MADLAD = "madlad"
     NONE = "none"
@@ -198,6 +197,21 @@ class TranscriptionConfig:
     # min_chunk_s: minimum size of a chunk produced by CUTTING.  Regions
     #   shorter than this are transcribed whole (never discarded — the
     #   pre-v1.2.7 discard deleted every utterance briefer than 2s).
+    # How the chunked engine decides WHAT to transcribe.
+    #   "vad"   — silero-VAD finds speech regions; only those are decoded.
+    #   "fixed" — the whole file is decoded; VAD is used only to choose cut
+    #             points.  Measured on a 152-minute file: 2.5x the speech
+    #             recovered (21.6 -> 54.9 min) at ~7x the decode time, because
+    #             silero classifies whispered speech and speech under
+    #             vocalisation as non-speech and drops it entirely.  The cost
+    #             is short interjection cues, handled by gensrt-heuristics.json.
+    chunk_mode: str = "vad"
+    # Fixed mode only: move each cue whose model start is not inside voiced
+    # sound (silero at 0.15) to the first audible onset in its window.
+    # Whisper stamps a lone short utterance 0.00→2.00 wherever it sits in
+    # the chunk — 560 of 1,293 cues on one file started 2-4 s early.
+    snap_onsets: bool = True
+
     max_chunk_s: float = 6.0
     min_chunk_s: float = 2.0
 
@@ -208,11 +222,8 @@ class TranscriptionConfig:
     # ocr_min_confidence filters weak readings; 0.0 keeps everything and
     # lets the picker decide, which is right until real-world scores are
     # better understood.
-    # Which engine translates OCR readings. "auto" prefers an offline
-    # engine when one is configured (as primary or as Google's fallback),
-    # because the picker is interactive: Google's 429 backoff costs ~12s of
-    # spinner before falling back to exactly the engine "auto" would have
-    # picked immediately. Set to "google"/"nllb"/"none" to override.
+    # Which engine translates OCR readings. "auto" follows
+    # translation_engine; set to "nllb"/"madlad"/"none" to override.
     # Longest side the text DETECTOR scales its input to. RapidOCR's own
     # default scales the SHORT side up to 736, which on a wide subtitle band
     # means upscaling a 1920x178 strip to 7932x736 — measured at 0.94 s per
@@ -268,28 +279,21 @@ class TranscriptionConfig:
     # <audio stem>.segments.csv — before post-processing and before
     # translation.  See gensrt/segment_dump.py.
     dump_segments_dir: str = ""
+    # When set, the heuristics report (what each post-ASR rule did, with
+    # translations) is written to this directory as <audio stem>.heuristics.txt
+    # and .json — the same report --heuristics-report prints, all rows.
+    heuristics_report_dir: str = ""
 
     # Translation
-    translation_engine: str = "google"
+    # "nllb" (offline, CC-BY-NC-4.0 weights — non-commercial only) or
+    # "madlad" (offline, Apache-2.0) or "none". Google GTX was removed in
+    # v1.3.0 — it blocks IPs that translate at subtitle volumes. A leftover
+    # "google" in an older config gets an explanatory error from the factory.
+    translation_engine: str = "nllb"
     translate: bool = True
-    target_language: str = "en"     # ISO 639-1; honoured by 'google' and 'nllb'
+    target_language: str = "en"     # ISO 639-1; honoured by 'nllb' and 'madlad'
 
-    # What to do when a Google GTX batch fails outright (typically HTTP 429
-    # once the endpoint starts rate-limiting the IP):
-    #
-    #   "nllb"      translate the failed batch offline via NLLB-200
-    #   "mymemory"  the pre-v1.2.7 behaviour (slow, low quality, no license
-    #               restriction)
-    #   "none"      keep the source text for the failed batch
-    #
-    # "nllb" is the default because it is the only fallback that produces
-    # usable output when the IP is throttled for the whole run — but the
-    # NLLB *weights* are CC-BY-NC-4.0 (non-commercial only). A commercial
-    # user opts out by setting this to "none" or "mymemory". See README,
-    # "Offline translation (NLLB)".
-    translation_fallback: str = "nllb"
-
-    # Which NLLB model the "nllb" engine/fallback uses: a HuggingFace repo
+    # Which NLLB model the "nllb" engine uses: a HuggingFace repo
     # ID (downloaded once into models/), a bare directory name under
     # models/, or a full path. Swapping to a different conversion is a
     # config change, not a code change.
@@ -327,6 +331,9 @@ class TranscriptionResult:
         segments:           Ordered list of subtitle segments.
         config:             Configuration used for this run.
         elapsed_s:          Wall-clock seconds for the full pipeline.
+        heuristics_report:  What the post-ASR rules acted on, with counts
+                            and translations, for a user who cannot read the
+                            source script.  ``None`` if not built.
     """
 
     input_path: Path
@@ -335,6 +342,12 @@ class TranscriptionResult:
     segments: list[SRTSegment]
     config: TranscriptionConfig
     elapsed_s: float = 0.0
+    heuristics_report: Any = None
+    #: Set when translation was requested but the whole file kept its
+    #: source text (engine failure after every fallback).  The CLI and GUI
+    #: must surface this: an untranslated file behind a warning line is how
+    #: a Korean SRT went out as Korean on an 8 GB card.
+    translation_error: str | None = None      # gensrt.heuristics.HeuristicsReport
 
     def to_dict(self) -> dict[str, Any]:
         return {

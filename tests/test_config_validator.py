@@ -50,18 +50,16 @@ def test_translation_engine_choices_match_the_factory():
         assert sanitized["translation_engine"] == key
 
 
-def test_translation_fallback_choices_match_the_factory():
-    from gensrt.translation.factory import FALLBACK_KEYS
-
-    for key in FALLBACK_KEYS:
-        _sanitized, errors = _validate_config_patch({"translation_fallback": key})
-        assert not errors, f"factory offers {key!r} but the validator rejects it"
+def test_removed_translation_fallback_is_no_longer_a_config_key():
+    """Went with Google GTX in v1.3.0; a stale key in an old file is ignored
+    on load, and the GUI never sends it."""
+    _sanitized, errors = _validate_config_patch({"translation_fallback": "nllb"})
+    assert errors == {"translation_fallback": "unknown configuration key"}
 
 
 @pytest.mark.parametrize("patch", [
     {"translation_engine": "madlad"},
     {"translation_engine": "nllb"},
-    {"translation_fallback": "madlad"},
     {"translation_model": "mijuanlo/nllb-200-distilled-600M-ct2-int8"},
     {"madlad_model": "olob0/madlad400-3b-mt-ct2-int8_float16"},
     {"max_chunk_s": 6.0},
@@ -80,7 +78,7 @@ def test_settings_the_gui_previously_could_not_save(patch):
 
 @pytest.mark.parametrize("patch,key", [
     ({"translation_engine": "not-an-engine"}, "translation_engine"),
-    ({"translation_fallback": "not-a-fallback"}, "translation_fallback"),
+    ({"translation_engine": "google"}, "translation_engine"),
     ({"ocr_translation_engine": "nonsense"}, "ocr_translation_engine"),
     ({"max_chunk_s": 0.0}, "max_chunk_s"),
     ({"ocr_det_limit_side_len": 10}, "ocr_det_limit_side_len"),

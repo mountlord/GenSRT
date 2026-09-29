@@ -61,6 +61,8 @@ import threading
 from pathlib import Path
 
 from gensrt.exceptions import TranslationError
+from gensrt.translation._clean import clean_mt_output
+from gensrt.translation._oom import SLICE_CUES, translate_with_oom_ladder
 from gensrt.translation.base import TranslationEngine
 
 logger = logging.getLogger(__name__)
@@ -256,6 +258,10 @@ class MADLADCT2Engine(TranslationEngine):
             getattr(config, "device", None) or "auto"
         ).strip().lower()
         self._translator = None      # ctranslate2.Translator, once loaded
+        # The token batch cap that last held on this device.  Starts at the
+        # class default; the OOM ladder lowers it and it stays lowered, so a
+        # small card walks the ladder once per process, not once per file.
+        self._batch_tokens: int = self._MAX_BATCH_TOKENS
         self._tokenizer = None       # tokenizers.Tokenizer, once loaded
         self._sp = None              # sentencepiece fallback, if ever used
         self._lock = threading.Lock()
@@ -302,17 +308,38 @@ class MADLADCT2Engine(TranslationEngine):
 
         sources = [self._encode(texts[i], tgt) for i in work_indices]
 
-        translations = self._translator.translate_batch(
-            sources,
-            batch_type="tokens",
-            max_batch_size=self._MAX_BATCH_TOKENS,
-            beam_size=self._BEAM_SIZE,
-            no_repeat_ngram_size=self._NO_REPEAT_NGRAM,
-        )
+        for start in range(0, len(sources), SLICE_CUES):
+            chunk = sources[start:start + SLICE_CUES]
 
-        for i, tr in zip(work_indices, translations):
-            results[i] = self._decode(tr.hypotheses[0])
+            def _run(max_batch: int, _chunk=chunk):
+                return self._translator.translate_batch(
+                    _chunk,
+                    batch_type="tokens",
+                    max_batch_size=max_batch,
+                    beam_size=self._BEAM_SIZE,
+                    no_repeat_ngram_size=self._NO_REPEAT_NGRAM,
+                )
+
+            translations, self._batch_tokens = translate_with_oom_ladder(
+                _run, max_batch_tokens=self._batch_tokens,
+                move_to_cpu=self._move_to_cpu, engine_name="MADLAD",
+            )
+            for i, tr in zip(work_indices[start:start + SLICE_CUES], translations):
+                results[i] = self._decode(tr.hypotheses[0])
         return results
+
+    def _move_to_cpu(self) -> None:
+        """Drop the GPU translator and reload on CPU (the OOM ladder's last rung)."""
+        import gc
+
+        import ctranslate2
+
+        with self._lock:
+            model_dir = ensure_model(self._model_ref)
+            self._translator = None
+            gc.collect()
+            self._translator = ctranslate2.Translator(str(model_dir), device="cpu", compute_type="int8")
+            logger.info("MADLAD translator reloaded: %s (device=cpu, compute=int8)", model_dir.name)
 
     # -- Loading ----------------------------------------------------------
 
@@ -444,5 +471,5 @@ class MADLADCT2Engine(TranslationEngine):
         if self._tokenizer is not None:
             ids = [self._tokenizer.token_to_id(p) for p in pieces]
             ids = [i for i in ids if i is not None]
-            return self._tokenizer.decode(ids, skip_special_tokens=True).strip()
-        return self._sp.decode(pieces).strip()
+            return clean_mt_output(self._tokenizer.decode(ids, skip_special_tokens=True))
+        return clean_mt_output(self._sp.decode(pieces))

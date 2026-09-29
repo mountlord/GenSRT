@@ -12,6 +12,12 @@
 #   pip install -r requirements-cuda.txt
 
 faster-whisper>=1.0.3
+# 4.6.3 (2026-01-06) implements Conv1D in pure CUDA and makes cuDNN optional.
+# Below that, Whisper's two encoder convolutions go through cuDNN, and cuDNN
+# >= 9.11 refuses Pascal GPUs (compute capability 6.x) — which is why GenSRT
+# once shipped a separate "pascal" installer with an old cuDNN.  Pinning the
+# floor is what lets one CUDA build cover Turing and Pascal alike.
+ctranslate2>=4.6.3
 requests>=2.31.0
 certifi>=2024.2.2      # CA bundle for TLS; transitive via requests, named because model downloads depend on it
 ffmpeg-python>=0.2.0

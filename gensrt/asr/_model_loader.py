@@ -73,6 +73,26 @@ def is_environment_error(exc: BaseException) -> bool:
     return any(marker in text for marker in _ENVIRONMENT_ERROR_MARKERS)
 
 
+def _free_gpu_residents() -> bool:
+    """Drop process-wide GPU residents we own (the shared translation
+    engines).  Returns True if anything was released."""
+    import gc
+
+    try:
+        from gensrt.translation import factory
+    except Exception:
+        return False
+    had = bool(factory._shared)
+    if had:
+        factory.clear_shared_engines()
+        gc.collect()
+        from gensrt.gpu_mem import used_mib
+        used = used_mib()
+        if used is not None:
+            logger.info("GPU memory after releasing the translation model: %d MiB in use", used)
+    return had
+
+
 def _compute_type_ladder(device: str, requested: str) -> list[str]:
     """Return the compute types to try, in order, for *device*."""
     ladder = [requested]
@@ -131,6 +151,21 @@ def load_whisper_model(
     )
 
     last_exc: Exception | None = None
+    # Every failure on the REQUESTED device, in ladder order.  The warning
+    # below used to print only the last one — which on a Pascal card is the
+    # expected "no int8_float16 on this device" rejection from the ladder's
+    # second rung, hiding whatever actually broke the first rung (an OOM,
+    # say).  The first failure is the cause; the rest are context.
+    failures: list[tuple[str, str, Exception]] = []
+
+    # A GPU that held a translation model from the previous file may have no
+    # room for Whisper.  Measured on a Tesla P4 (8 GB): MADLAD-400 3B in int8
+    # stayed resident after file 1, and file 2's Whisper load failed with
+    # "out of memory" — then fell to CPU for 80 minutes of audio, while
+    # freeing the translator would have let it stay on the GPU.  So on an
+    # OOM on the requested device, release what this process holds and try
+    # that device once more before leaving it.
+    freed_once = False
 
     for device in device_ladder:
         for ct in _compute_type_ladder(device, requested_ct):
@@ -138,17 +173,44 @@ def load_whisper_model(
                 model = WhisperModel(model_ref, device=device, compute_type=ct)
             except Exception as exc:
                 last_exc = exc
+                failures.append((device, ct, exc))
                 logger.debug(
                     "WhisperModel load failed (device=%r, compute_type=%r): %s",
                     device, ct, exc,
                 )
+                if (device == requested_device and device != "cpu"
+                        and not freed_once and "out of memory" in str(exc).lower()):
+                    freed_once = True
+                    if _free_gpu_residents():
+                        logger.info(
+                            "Whisper load hit CUDA out of memory — released the "
+                            "resident translation model and retrying on %s.", device,
+                        )
+                        try:
+                            model = WhisperModel(model_ref, device=device, compute_type=ct)
+                        except Exception as exc2:
+                            last_exc = exc2
+                            failures.append((device, ct, exc2))
+                            continue
+                        return model
                 continue
 
             if device != requested_device:
+                on_requested = [f for f in failures if f[0] == requested_device]
+                if on_requested:
+                    _d, first_ct, first_exc = on_requested[0]
+                    cause = f"{requested_device}/{first_ct}: {first_exc}"
+                    if len(on_requested) > 1:
+                        others = "; ".join(
+                            f"{c}: {str(e)[:80]}" for _d, c, e in on_requested[1:]
+                        )
+                        cause += f" (also tried {others})"
+                else:
+                    cause = str(last_exc)
                 msg = (
                     f"GPU unavailable for inference — fell back to {device.upper()}. "
                     f"Transcription will be substantially slower. "
-                    f"(Cause: {last_exc})"
+                    f"(Cause: {cause})"
                 )
                 logger.warning("%s", msg)
                 if callable(status):

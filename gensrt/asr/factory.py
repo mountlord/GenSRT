@@ -62,6 +62,13 @@ KNOWN_MONOLINGUAL_MODELS: tuple[tuple[str, str], ...] = (
     # introduced in arxiv 2605.13087 (Juvekar, Manohar, et al., 2026).
     # CT2 conversion published by Adalat AI directly; license Apache-2.0.
     ("adalat-ai/ct2-whisper-medium-ml-rmft", "ml"),
+    # Kotoba Technologies' Japanese distil-whisper (large-v3 teacher, ReazonSpeech
+    # data).  v1.0 and v2.0 are Japanese-ONLY: whatever audio they hear, Japanese
+    # text is all they can emit — Korean broadcasts came out as ごめん / おっぱい
+    # and were then faithfully translated.  The bilingual variant
+    # (kotoba-whisper-bilingual) is deliberately not listed.
+    ("kotoba-tech/kotoba-whisper-v1.0", "ja"),
+    ("kotoba-tech/kotoba-whisper-v2", "ja"),
 )
 
 # Derived view: just the prefix strings, for the always-chunked check.
