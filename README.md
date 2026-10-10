@@ -41,6 +41,7 @@ GenSRT generates SRT subtitle files from video using GPU-accelerated speech reco
 - **OCR: Read Frame and Extract Subtitles** — read the burned-in text on a paused frame into a cue, or extract a whole film's burned-in subtitles into an SRT (with translation). RapidOCR/PP-OCR on onnxruntime; models download per language on first use.
 - **Fixed-window chunking** (`--chunk-mode fixed`) — decode the whole file in 5–8 s windows with no voice detector in front, for soft speech and speech under other vocal sounds that VAD drops categorically. On one test film: 21.6 → 54.9 minutes of recovered speech.
 - **Cues start when the speaker does** — in fixed-window mode Whisper stamps a lone short utterance at the window start, 2–4 s early; a low-threshold onset pass now moves such cues to the audible onset.
+- **Profiles** — `--profile broadcast` / `--profile soft-speech` bundle the chunking mode, engine and model choice for one kind of material; `gensrt-profiles.json` adds your own. See [Profiles](#profiles-command-line).
 - **Post-ASR heuristics** in a user-editable `gensrt-heuristics.json` — per-language interjection collapse, drop and hallucination lists, a density rule for lexicalised vocalisation, and subject-pronoun stripping for pro-drop languages. `--heuristics-report` shows what each rule did, with translations, so you can tune it without reading the source language.
 - **One CUDA installer for Pascal and newer.** The separate Pascal build is retired: CTranslate2 ≥ 4.6.3 no longer needs cuDNN for Whisper, so GTX 10-series and Tesla P4/P40/P100 run the standard CUDA build (int8).
 - **Transport-stream recordings play in the editor again.** The embedded browser (WebView2/Edge) dropped its MPEG-TS demuxer in a runtime update, so `.ts` files went black. GenSRT now rewraps a `.ts`/`.m2ts`/`.mts` into MP4 with ffmpeg on first open — stream copy, no re-encode, disk-bound — into a cache in the temp folder (20 GB cap, oldest evicted), with a progress bar in the player. Seeking and subtitle alignment are unchanged; the second open is instant. **Save MP4** in the header keeps the rewrap as a file next to the recording (or wherever you choose).
@@ -98,6 +99,22 @@ See the [v1.2 release notes](https://github.com/mountlord/GenSRT/releases/tag/v1
 **For Malayalam:** select `adalat-ai/ct2-whisper-medium-ml-rmft` from the Model dropdown. In our testing it was more accurate than the alternatives and roughly 3× faster — see [Malayalam models](#malayalam-models) below. `smcproject/vegam-whisper-medium-ml-int8_float16` also works well. Chunked inference runs automatically for both.
 
 **For other Indic or less-common languages:** start with `large-v3-turbo`. If results are poor, search HuggingFace for community fine-tunes and add the repo path via **New…** in the Model dropdown.
+
+### Profiles (command line)
+
+A profile is a named set of defaults for one kind of material, so a run is one word instead of five flags:
+
+```
+gensrt --input "F:\Live" --profile broadcast
+gensrt --input "F:\Films" --profile soft-speech
+```
+
+| Profile | For | Sets |
+|---|---|---|
+| `broadcast` | studio and broadcast speech — news, live streams, interviews; any language | `large-v3-turbo`, VAD chunking, MADLAD-400 |
+| `soft-speech` | soft speech and speech under other vocal sounds; any language | fixed 5–8 s windows, onset snapping, MADLAD-400, the `soft-speech` heuristics mode (lone short cues, hallucinated laughter and repetition loops removed); the model follows the language — kotoba-whisper v2.0 for `ja`, `large-v3-turbo` otherwise |
+
+Precedence is built-in defaults < `gensrt-config.json` < profile < explicit flags, so `--profile soft-speech --model large-v3` still runs large-v3. A `"profile"` key in the config file names a default. `--list-profiles` prints every profile with what it sets; `--init-profiles` writes `gensrt-profiles.json` so you can add your own (same keys as the config file; paths and device settings are per run and refused). A profile can carry `model_by_language`, applied once the effective source language is known and only when no explicit `--model` was given — that is how `soft-speech` runs kotoba for Japanese and `large-v3-turbo` for everything else, so `--profile soft-speech --source-language ko` does the right thing instead of feeding Korean to a Japanese-only model.
 
 ## Malayalam models
 

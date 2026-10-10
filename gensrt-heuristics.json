@@ -28,7 +28,28 @@
         ],
         "hallucination_contains": [
           "ご視聴"
-        ]
+        ],
+        "modes": {
+          "soft-speech": {
+            "drop": [
+              "うん",
+              "はい",
+              "気持ちいい"
+            ],
+            "hallucination": [
+              "ごめんなさい",
+              "おめでとう"
+            ],
+            "hallucination_contains": [
+              "アハハ",
+              "ハハハ"
+            ],
+            "isolated_max_chars": 4,
+            "isolated_window_s": 8.0,
+            "laughter": true,
+            "loops": true
+          }
+        }
       },
       "ko": {
         "enabled": true,

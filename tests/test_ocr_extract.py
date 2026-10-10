@@ -364,8 +364,10 @@ def test_cli_runner_rejects_zero_or_many_inputs(monkeypatch, tmp_path):
 
     assert cli._run_extract(_extract_args(["--extract-subtitles"])) == 2
 
-    a = tmp_path / "a.mkv"; a.write_bytes(b"x")
-    b = tmp_path / "b.mkv"; b.write_bytes(b"x")
+    a = tmp_path / "a.mkv"
+    a.write_bytes(b"x")
+    b = tmp_path / "b.mkv"
+    b.write_bytes(b"x")
     args = _extract_args(["--input", str(a), "--input", str(b),
                           "--extract-subtitles"])
     assert cli._run_extract(args) == 2

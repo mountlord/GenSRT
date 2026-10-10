@@ -137,6 +137,34 @@ BUILTIN_HEURISTICS: dict[str, Any] = {
                 # For the sign-off phrases Whisper learned from subtitled
                 # video, which arrive in variants ("…ました", "…ました！").
                 "hallucination_contains": ["ご視聴"],
+                # Modes: extra rules a profile switches on (config
+                # heuristics_mode / --heuristics-mode).  "soft-speech" is
+                # for material where speech is rare and the decoder turns
+                # breathing, moans and laughter into words: measured on two
+                # files (24 and 47 cues) where one and fourteen cues were
+                # speech.  Words that are dialogue in broadcast (うん, はい)
+                # are noise here, so the mode's lists are ADDED to the
+                # section's, and the three rules below switch on.
+                "modes": {
+                    "soft-speech": {
+                        "drop": ["うん", "はい", "気持ちいい"],
+                        "hallucination": ["ごめんなさい", "おめでとう"],
+                        "hallucination_contains": ["アハハ", "ハハハ"],
+                        # A cue of at most this many characters with no
+                        # longer cue within isolated_window_s on either side
+                        # is a vocalisation the model rendered as a word:
+                        # 25 lone うん across two files, ちょっと, うまい, やばい.
+                        "isolated_max_chars": 4,
+                        "isolated_window_s": 8.0,
+                        # Strings made only of laugh syllables (アハハハ,
+                        # アッハッ) — hallucinated laughter, any length.
+                        "laughter": True,
+                        # One unit repeated three or more times
+                        # (いっていっていっていって, ダメダメダメ): the decoder's
+                        # stutter loop.
+                        "loops": True,
+                    },
+                },
             },
             # Hangul packs a syllable per character: three characters is a
             # whole word (예산이 "the budget" was removed as a dense run of an
@@ -235,10 +263,20 @@ class InterjectionRules:
     hallucination_contains: frozenset[str] = field(default_factory=frozenset)
     #: Which language section, if any, these effective lists came from.
     language: str | None = None
+    #: Mode rules (see the ``modes`` key of a language section).  0 / False
+    #: means off, which is the default outside a mode.
+    isolated_max_chars: int = 0
+    isolated_window_s: float = 0.0
+    laughter: bool = False
+    loops: bool = False
+    #: The mode that was applied, if any.
+    mode: str | None = None
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any], language: str | None = None) -> "InterjectionRules":
-        """Effective rules for *language*: global lists plus that language's.
+    def from_dict(cls, d: dict[str, Any], language: str | None = None,
+                  mode: str | None = None) -> "InterjectionRules":
+        """Effective rules for *language* (and *mode* within it): global
+        lists plus that language's, plus the mode's on top.
 
         A flat file with only top-level ``always_collapse`` / ``drop`` (the
         first release's shape) still works — those are the global lists.
@@ -248,6 +286,8 @@ class InterjectionRules:
         halluc = set(_strset(d.get("hallucination", [])))
         contains = set(_strset(d.get("hallucination_contains", [])))
         used = None
+        used_mode = None
+        extra: dict[str, Any] = {}
         langs = d.get("languages") or {}
         if language and isinstance(langs, dict):
             code = language.strip().lower()
@@ -256,12 +296,23 @@ class InterjectionRules:
                 section = langs.get(key)
                 if isinstance(section, dict):
                     if section.get("enabled", True):
-                        if section.get("max_chars") is not None:
-                            d = {**d, "max_chars": section["max_chars"]}
-                        collapse |= _strset(section.get("always_collapse", []))
-                        drop |= _strset(section.get("drop", []))
-                        halluc |= _strset(section.get("hallucination", []))
-                        contains |= _strset(section.get("hallucination_contains", []))
+                        layers = [section]
+                        modes = section.get("modes") or {}
+                        m = (mode or "").strip().lower()
+                        if m and isinstance(modes, dict) and isinstance(modes.get(m), dict):
+                            layers.append(modes[m])
+                            used_mode = m
+                        for layer in layers:
+                            if layer.get("max_chars") is not None:
+                                d = {**d, "max_chars": layer["max_chars"]}
+                            collapse |= _strset(layer.get("always_collapse", []))
+                            drop |= _strset(layer.get("drop", []))
+                            halluc |= _strset(layer.get("hallucination", []))
+                            contains |= _strset(layer.get("hallucination_contains", []))
+                            for k in ("isolated_max_chars", "isolated_window_s",
+                                      "laughter", "loops"):
+                                if layer.get(k) is not None:
+                                    extra[k] = layer[k]
                         used = key
                     break
         return cls(
@@ -274,6 +325,11 @@ class InterjectionRules:
             hallucination=frozenset(halluc),
             hallucination_contains=frozenset(contains),
             language=used,
+            isolated_max_chars=max(0, int(extra.get("isolated_max_chars", 0) or 0)),
+            isolated_window_s=max(0.0, float(extra.get("isolated_window_s", 0.0) or 0.0)),
+            laughter=bool(extra.get("laughter", False)),
+            loops=bool(extra.get("loops", False)),
+            mode=used_mode,
         )
 
 
@@ -327,11 +383,11 @@ class Heuristics:
     raw: dict[str, Any] = field(default_factory=dict)
     source_path: Path | None = None
 
-    def for_language(self, language: str | None) -> InterjectionRules:
+    def for_language(self, language: str | None, mode: str | None = None) -> InterjectionRules:
         inter = self.raw.get("interjections") or {}
         if not isinstance(inter, dict):
             inter = {}
-        return InterjectionRules.from_dict(inter, language)
+        return InterjectionRules.from_dict(inter, language, mode)
 
     def density(self) -> DensityRules:
         d = self.raw.get("density") or {}
@@ -410,6 +466,24 @@ def _key(text: str) -> str:
 def _is_junk(text: str) -> bool:
     """Text the decoder could not render: contains the replacement character."""
     return "\ufffd" in text
+
+
+#: Laugh syllables in katakana and hiragana, plus the small tsu and the
+#: long-vowel mark that string them together.  A cue made only of these
+#: (and at least one actual "ha"-row syllable) is laughter, not a word.
+_LAUGH_CHARS = frozenset("ハヒフヘホアッーはひふへほあっ")
+_LAUGH_CORE = frozenset("ハヒフヘホはひふへほ")
+_LOOP = re.compile(r"^(.{1,4}?)\1{2,}$")
+
+
+def _is_laughter(text: str) -> bool:
+    k = _key(text)
+    return len(k) >= 3 and all(c in _LAUGH_CHARS for c in k) and any(c in _LAUGH_CORE for c in k)
+
+
+def _is_loop(text: str) -> bool:
+    """One unit of up to four characters repeated three or more times."""
+    return bool(_LOOP.match(_key(text)))
 
 
 def _is_hallucination(text: str, rules: InterjectionRules) -> bool:
@@ -557,6 +631,35 @@ def drop_dense_runs(
     return out, removed
 
 
+def drop_isolated(
+    segments: list[SRTSegment], rules: InterjectionRules
+) -> tuple[list[SRTSegment], "Counter[str]"]:
+    """Remove short cues with no longer cue within the window on either side.
+
+    Soft-speech mode.  The material has one line of dialogue in minutes of
+    vocalisation, and the decoder renders each breath as its habitual word:
+    a lone うん every 10-30 s (25 across two files), ちょっと, うまい, やばい.
+    Density and collapse both need neighbours; these have none.  A short
+    cue NEXT to dialogue is kept — that is where an acknowledgement lives.
+    """
+    removed: Counter[str] = Counter()
+    n = rules.isolated_max_chars
+    w = rules.isolated_window_s
+    if n <= 0 or w <= 0 or not segments:
+        return list(segments), removed
+    longs = [(s.start, s.end) for s in segments if len(_key(s.text or "")) > n]
+    out = []
+    for seg in segments:
+        k = _key(seg.text or "")
+        if k and len(k) <= n and not any(
+            (s0 - seg.end) <= w and (seg.start - e0) <= w for s0, e0 in longs
+        ):
+            removed[(seg.text or "").strip()] += 1
+            continue
+        out.append(seg)
+    return out, removed
+
+
 # ── Rule: subject stripping (post-translation, English target) ────────────
 
 # Leading word, with an optional clitic that may arrive as an ASCII or curly
@@ -646,26 +749,31 @@ def run_heuristics(
     segments: list[SRTSegment],
     heuristics: Heuristics | None = None,
     language: str | None = None,
+    mode: str | None = None,
 ) -> tuple[list[SRTSegment], HeuristicsStats]:
-    """Run the pre-translation rules for *language*, in this order:
+    """Run the pre-translation rules for *language* (and *mode*), in order:
 
-    1. ``drop`` and ``hallucination`` lists (whole-text match) — removed.
+    1. ``drop`` and ``hallucination`` lists (whole-text match), junk, and —
+       in a mode that enables them — laughter and repetition loops: removed.
     2. ``density`` — dense runs of any interjection-class text removed.
-    3. ``collapse`` — surviving runs of identical short cues merged.
+    3. ``isolated`` (mode) — short cues with no dialogue near them removed.
+    4. ``collapse`` — surviving runs of identical short cues merged.
 
     Density runs before collapse because collapse would hide the counts it
     needs; the lists run first so a string the user has already decided on
-    never reaches the density heuristic.
+    never reaches the density heuristic; isolated runs after the lists so
+    a hallucinated neighbour does not count as dialogue.
     """
     h = heuristics or load_heuristics()
-    rules = h.for_language(language)
+    rules = h.for_language(language, mode)
     stats = HeuristicsStats(cues_in=len(segments), cues_out=len(segments))
     if not rules.enabled or not segments:
         return list(segments), stats
 
     kept: list[SRTSegment] = []
     listed: dict[str, Counter[str]] = {"drop": Counter(), "hallucination": Counter(),
-                                       "junk": Counter()}
+                                       "junk": Counter(), "laughter": Counter(),
+                                       "loop": Counter()}
     for seg in segments:
         text = (seg.text or "").strip()
         if _is_junk(text):
@@ -677,6 +785,10 @@ def run_heuristics(
             listed["drop"][text] += 1
         elif _is_hallucination(text, rules):
             listed["hallucination"][text] += 1
+        elif rules.laughter and _is_laughter(text):
+            listed["laughter"][text] += 1
+        elif rules.loops and _is_loop(text):
+            listed["loop"][text] += 1
         else:
             kept.append(seg)
     stats.dropped.update({k: v for k, v in listed.items() if v})
@@ -685,6 +797,10 @@ def run_heuristics(
     if dense:
         stats.dropped["density"] = dense
 
+    kept, lone = drop_isolated(kept, rules)
+    if lone:
+        stats.dropped["isolated"] = lone
+
     # collapse_interjections re-indexes; its drop pass finds nothing left.
     result, st = collapse_interjections(kept, replace(rules, drop=frozenset()))
     stats.collapsed = st["collapsed"]
@@ -692,11 +808,14 @@ def run_heuristics(
 
     if stats.dropped_total() or stats.collapsed:
         logger.info(
-            "Heuristics [%s]: %d cues → %d (%d collapsed; dropped: %d listed, "
-            "%d hallucination, %d dense, %d junk)%s",
-            rules.language or "global", stats.cues_in, stats.cues_out, stats.collapsed,
+            "Heuristics [%s%s]: %d cues → %d (%d collapsed; dropped: %d listed, "
+            "%d hallucination, %d dense, %d junk, %d isolated, %d laughter, %d loop)%s",
+            rules.language or "global", f"/{rules.mode}" if rules.mode else "",
+            stats.cues_in, stats.cues_out, stats.collapsed,
             stats.dropped_total("drop"), stats.dropped_total("hallucination"),
             stats.dropped_total("density"), stats.dropped_total("junk"),
+            stats.dropped_total("isolated"), stats.dropped_total("laughter"),
+            stats.dropped_total("loop"),
             f" [{h.source_path.name}]" if h.source_path else " [built-in rules]",
         )
     return result, stats
@@ -730,7 +849,7 @@ class ReportRow:
     translation: str | None      # most common translation seen, if any
     dropped: int                 # occurrences removed by the current rules
     collapsed: int               # cues merged into a neighbour
-    reason: str | None = None    # "drop" | "hallucination" | "density"
+    reason: str | None = None    # drop | hallucination | density | junk | isolated | laughter | loop
 
 
 @dataclass(frozen=True)
@@ -777,7 +896,8 @@ class HeuristicsReport:
         for r in self.rows[:limit]:
             if r.dropped:
                 why = {"drop": "drop list", "hallucination": "hallucination",
-                       "density": "dense run", "junk": "junk"}.get(r.reason or "", r.reason or "")
+                       "density": "dense run", "junk": "junk", "isolated": "isolated",
+                       "laughter": "laughter", "loop": "repetition loop"}.get(r.reason or "", r.reason or "")
                 action = f"DROPPED {r.dropped}/{r.count} ({why})" if r.dropped < r.count \
                     else f"DROPPED ({why})"
             elif r.collapsed:
@@ -792,7 +912,8 @@ class HeuristicsReport:
                          "hallucination_contains):")
             for r in self.repeats[:limit]:
                 why = {"drop": "drop list", "hallucination": "hallucination",
-                       "density": "dense run", "junk": "junk"}.get(r.reason or "", "")
+                       "density": "dense run", "junk": "junk", "isolated": "isolated",
+                       "laughter": "laughter", "loop": "repetition loop"}.get(r.reason or "", "")
                 action = f"DROPPED ({why})" if r.dropped else "kept"
                 lines.append(f"  {r.count:>4}x  {r.source[:28]:<28}  {(r.translation or '?')[:30]:<30} {action}")
         if self.subject_stripped:

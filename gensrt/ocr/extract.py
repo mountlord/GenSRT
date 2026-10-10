@@ -42,7 +42,6 @@ import logging
 import re
 import subprocess
 import unicodedata
-from collections import Counter
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from pathlib import Path

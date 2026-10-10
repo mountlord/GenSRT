@@ -308,13 +308,17 @@ def api_video_info():
 
     nb_frames: Optional[int] = None
     if nb_s and nb_s.upper() != "N/A":
-        try: nb_frames = int(nb_s)
-        except Exception: nb_frames = None
+        try:
+            nb_frames = int(nb_s)
+        except Exception:
+            nb_frames = None
 
     duration: Optional[float] = None
     if dur_s and dur_s.upper() != "N/A":
-        try: duration = float(dur_s)
-        except Exception: duration = None
+        try:
+            duration = float(dur_s)
+        except Exception:
+            duration = None
 
     return jsonify({
         "path":           str(video_path),

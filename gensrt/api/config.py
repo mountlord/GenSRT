@@ -3,6 +3,7 @@
 Routes (URLs unchanged from the pre-split server.py):
   GET  /api/config            POST /api/config
   GET  /api/engines           GET  /api/known_models
+  GET  /api/profiles
   POST /api/validate_model    POST /api/add_known_model
 """
 
@@ -155,11 +156,14 @@ _CONFIG_VALIDATORS = {
     "output_filename":         _v_str_or_null,
     "recurse":                 _v_bool,
     "log_level":               _v_str_in(_LOG_LEVEL_CHOICES),
+    "remux_cache_keep":        _v_bool,
+    "profile":                 _v_str_or_null,
     # Diagnostics — a path, or "" to disable.  Deliberately not surfaced in
     # the config UI: it is an investigation tool, not a user setting.
     "debug_chunk_dir":         _v_str,
     "dump_segments_dir":       _v_str,
     "heuristics_report_dir":   _v_str,
+    "heuristics_mode":         _v_str_or_null,
 }
 
 
@@ -318,6 +322,36 @@ def api_engines():
 # from the Config modal.  The /api/validate_model endpoint does a light
 # HuggingFace metadata check (no weights download) so typos surface
 # before the first transcribe call.
+
+@bp.route("/api/profiles", methods=["GET"])
+def api_profiles():
+    """Every profile the CLI would accept, for the config editor's picker.
+
+    ``{"profiles": [{"name", "description", "source", "settings",
+    "model_by_language"}], "error": str|null}``.  A malformed
+    gensrt-profiles.json is reported in ``error`` with the built-ins
+    still listed, so the editor keeps working while the user fixes it.
+    """
+    from gensrt.exceptions import ConfigError
+    from gensrt.profiles import BUILTIN_PROFILES, load_profiles
+
+    error = None
+    try:
+        ps = load_profiles()
+    except ConfigError as exc:
+        error = str(exc)
+        ps = None
+    if ps is None:
+        items = [{"name": n, "description": d.get("description", ""), "source": "built-in",
+                  "settings": d.get("settings", {}),
+                  "model_by_language": d.get("model_by_language", {})}
+                 for n, d in BUILTIN_PROFILES.items()]
+    else:
+        items = [{"name": pr.name, "description": pr.description, "source": pr.source,
+                  "settings": pr.settings, "model_by_language": pr.model_by_language}
+                 for pr in (ps.by_name[n] for n in ps.names())]
+    return jsonify({"profiles": items, "error": error})
+
 
 @bp.route("/api/known_models", methods=["GET"])
 def api_known_models():

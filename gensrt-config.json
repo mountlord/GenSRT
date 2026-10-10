@@ -28,5 +28,7 @@
   "asr_engine": "chunked",
   "madlad_model": "olob0/madlad400-3b-mt-ct2-int8_float16",
   "chunk_mode": "vad",
-  "snap_onsets": true
+  "snap_onsets": true,
+  "profile": "soft-speech",
+  "remux_cache_keep": false
 }

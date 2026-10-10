@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import json
 
-import pytest
 
 from gensrt.heuristics import (
     BUILTIN_HEURISTICS,
@@ -301,7 +300,6 @@ def test_apply_heuristics_uses_the_detected_language():
 # ── Run report ────────────────────────────────────────────────────────────
 
 def _report_fixture():
-    from gensrt.heuristics import build_report
 
     raw = [_seg(1, 0.0, 0.5, "ああ"), _seg(2, 1.0, 1.5, "ああ"),
            _seg(3, 2.0, 3.0, "はい"), _seg(4, 4.0, 6.0, "何ですか?")]
@@ -559,7 +557,7 @@ def test_strip_subjects_with_misaligned_inputs_is_a_no_op():
 # ── Report carries the reasons ────────────────────────────────────────────
 
 def test_report_shows_reason_and_partial_counts_from_stats():
-    from gensrt.heuristics import HeuristicsStats, build_report, run_heuristics
+    from gensrt.heuristics import build_report, run_heuristics
 
     raw = [_seg(1, 0, 1, "ああ"), _seg(2, 2, 3, "ごめん"), _seg(3, 4, 5, "はい"),
            _seg(4, 6, 7, "はい"), _seg(5, 60, 61, "はい")]
@@ -618,7 +616,6 @@ def test_span_cap_does_not_break_the_run():
 
 
 def test_span_cap_zero_means_span_the_run(tmp_path):
-    import json
     from gensrt.heuristics import InterjectionRules
 
     rules = InterjectionRules.from_dict({"max_span_s": 0, "languages": {}})
@@ -761,3 +758,50 @@ def test_repeats_are_reported_even_when_there_are_no_short_strings():
     final, st = run_heuristics(raw, h, "ko")
     rep = build_report(raw, final, h.for_language("ko"), stats=st)
     assert rep.rows == [] and len(rep.repeats) == 1
+
+
+# ── Modes (soft-speech) ────────────────────────────────────────────────────
+
+def test_mode_layers_on_top_of_the_language_section():
+    from gensrt.heuristics import BUILTIN_HEURISTICS, InterjectionRules
+
+    plain = InterjectionRules.from_dict(BUILTIN_HEURISTICS["interjections"], "ja")
+    soft = InterjectionRules.from_dict(BUILTIN_HEURISTICS["interjections"], "ja", "soft-speech")
+    assert plain.mode is None and plain.isolated_max_chars == 0 and not plain.laughter
+    assert "うん" not in plain.drop                      # a word, in broadcast
+    assert soft.mode == "soft-speech" and "うん" in soft.drop and "ああ" in soft.drop
+    assert "ごめん" in soft.hallucination and "ごめんなさい" in soft.hallucination
+    assert soft.isolated_max_chars == 4 and soft.isolated_window_s == 8.0
+    assert soft.laughter and soft.loops
+
+
+def test_unknown_mode_or_language_without_one_is_just_the_language_rules():
+    from gensrt.heuristics import BUILTIN_HEURISTICS, InterjectionRules
+
+    a = InterjectionRules.from_dict(BUILTIN_HEURISTICS["interjections"], "ja", "no-such-mode")
+    b = InterjectionRules.from_dict(BUILTIN_HEURISTICS["interjections"], "ja")
+    assert a == b
+    ko = InterjectionRules.from_dict(BUILTIN_HEURISTICS["interjections"], "ko", "soft-speech")
+    assert ko.mode is None and ko.max_chars == 2
+
+
+def test_laughter_and_loop_predicates():
+    from gensrt.heuristics import _is_laughter, _is_loop
+
+    assert _is_laughter("アハハハ") and _is_laughter("アッハッ") and _is_laughter("はっはっは。")
+    assert not _is_laughter("ああ")           # no ha-row syllable
+    assert not _is_laughter("ハラ")           # ラ is not a laugh syllable
+    assert not _is_laughter("はい")
+    assert _is_loop("いっていっていっていって") and _is_loop("ダメダメダメ") and _is_loop("ああああ")
+    assert not _is_loop("ダメダメ") and not _is_loop("行って行って行ってください")
+
+
+def test_isolated_rule_is_off_without_a_mode_and_keeps_short_cues_near_dialogue():
+    from gensrt.heuristics import InterjectionRules, drop_isolated
+    from gensrt.models import SRTSegment
+
+    segs = [SRTSegment(1, 0, 1, "うまい"), SRTSegment(2, 30, 33, "大丈夫じゃないか"), SRTSegment(3, 35, 36, "うまい")]
+    out, removed = drop_isolated(segs, InterjectionRules())
+    assert len(out) == 3 and not removed
+    out, removed = drop_isolated(segs, InterjectionRules(isolated_max_chars=4, isolated_window_s=8.0))
+    assert [s.text for s in out] == ["大丈夫じゃないか", "うまい"] and removed == {"うまい": 1}

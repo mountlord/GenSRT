@@ -1,0 +1,11 @@
+GenSRT drop: soft-speech mode fix (2026-09-30)
+
+Two files on top of GenSRT-soft-speech-mode.  The profile did not set
+heuristics_mode (my edit was overwritten by a later stale write), so the
+mode never ran.  Your rules file was already right; no --init-heuristics
+needed.  Re-run IPZZ-664 with the script: the banner still says
+Profile: soft-speech, and the log now has
+  Heuristics [ja/soft-speech]: 47 cues -> 14 (... 24 isolated ...)
+If you run without the profile, add --heuristics-mode soft-speech.
+
+pytest -q -> 678 passed

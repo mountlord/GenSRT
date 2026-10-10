@@ -269,7 +269,8 @@ def run_pipeline(
         heuristics = load_heuristics()
         raw_segments = list(srt_segments)          # for the run report
         srt_segments, heuristics_stats = run_heuristics(
-            srt_segments, heuristics, detected_language
+            srt_segments, heuristics, detected_language,
+            getattr(config, "heuristics_mode", "") or None,
         )
 
         # ── Phase 3: Translation ──────────────────────────────────────────

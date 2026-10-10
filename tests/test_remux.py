@@ -329,3 +329,28 @@ def test_export_error_paths(client, tmp_path, monkeypatch):
     r = client.post("/api/media/export", json={"path": str(ts), "dest": str(dest)})
     assert r.status_code == 409 and r.get_json()["progress"] == 0.4
     assert not dest.exists()
+
+
+def test_clear_removes_everything_and_joins_running_jobs(tmp_path, fake_bins, monkeypatch):
+    src = tmp_path / "rec.ts"
+    src.write_bytes(b"\x47" * 188)
+    d = tmp_path / "cache"
+    m = remux.RemuxManager(directory=d, ffmpeg=fake_bins[0], ffprobe=fake_bins[1])
+    m.prepare(src)
+    _wait(m, src)
+    (d / "leftover.mp4.part").write_bytes(b"x" * 5)
+    monkeypatch.setenv("FAKE_MODE", "slow")
+    src2 = tmp_path / "rec2.ts"
+    src2.write_bytes(b"\x47" * 188 * 2)
+    m.prepare(src2)
+    time.sleep(0.1)
+    freed = m.clear()
+    assert freed >= 5 and not list(d.iterdir())
+    assert m.status(src).state == "unprepared"
+
+
+def test_remux_cache_keep_is_a_saveable_config_field():
+    from gensrt.api.config import _CONFIG_VALIDATORS
+    from gensrt.config import BUILTIN_DEFAULTS
+    assert BUILTIN_DEFAULTS["remux_cache_keep"] is False
+    assert _CONFIG_VALIDATORS["remux_cache_keep"](True) == (True, "")

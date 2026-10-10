@@ -44,6 +44,7 @@ def setup_logging(level: str = "INFO") -> None:
         root.setLevel(numeric)
         for h in root.handlers:
             h.setLevel(numeric)
+        _quiet_faster_whisper(numeric)
         return
 
     root.handlers.clear()
@@ -54,5 +55,16 @@ def setup_logging(level: str = "INFO") -> None:
     # Quiet noisy third-party loggers
     for noisy in ("httpx", "httpcore", "urllib3", "filelock", "transformers"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
+    _quiet_faster_whisper(numeric)
 
     _CONFIGURED = True
+
+
+def _quiet_faster_whisper(numeric: int) -> None:
+    """faster-whisper logs "Processing audio with duration 00:07.730" at
+    INFO for every call — one line per chunk, hundreds per file in chunked
+    mode.  That is decoder chatter, not progress; it stays only when the
+    user asked for DEBUG."""
+    logging.getLogger("faster_whisper").setLevel(
+        logging.DEBUG if numeric <= logging.DEBUG else logging.WARNING
+    )

@@ -283,6 +283,32 @@ class RemuxManager:
             total -= size
         return freed
 
+    def clear(self) -> int:
+        """Cancel running jobs and delete every file in the cache.  Returns
+        bytes freed.  Called on window close unless ``remux_cache_keep``."""
+        self.cancel_all()
+        with self._lock:
+            jobs = list(self._jobs.values())
+        for job in jobs:
+            if job.thread is not None:
+                job.thread.join(timeout=5)
+        d = self.directory
+        if not d.is_dir():
+            return 0
+        freed = 0
+        for p in d.iterdir():
+            if p.is_file():
+                try:
+                    size = p.stat().st_size
+                except OSError:
+                    size = 0
+                freed += self._unlink(p, size)
+        with self._lock:
+            self._jobs.clear()
+        if freed:
+            logger.info("Remux cache cleared: %.0f MiB", freed / 2**20)
+        return freed
+
     # ── worker ─────────────────────────────────────────────────────────
     def _run(self, job: _Job) -> None:
         part = job.dst.with_name(job.dst.name + _PART_SUFFIX)

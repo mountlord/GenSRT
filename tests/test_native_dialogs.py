@@ -18,3 +18,15 @@ def test_every_file_filter_in_server_py_parses():
     assert filters, "no file filters found — did the dialogs move?"
     bad = [f for f in filters if not _VALID.match(f)]
     assert not bad, f"invalid pywebview file filters: {bad}"
+
+
+def test_faster_whisper_chatter_is_off_unless_debug():
+    import logging
+
+    from gensrt.utils.logging_config import setup_logging
+
+    setup_logging("INFO")
+    assert logging.getLogger("faster_whisper").level == logging.WARNING
+    setup_logging("DEBUG")
+    assert logging.getLogger("faster_whisper").level == logging.DEBUG
+    setup_logging("INFO")

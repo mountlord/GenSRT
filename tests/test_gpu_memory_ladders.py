@@ -153,7 +153,8 @@ def test_untranslated_file_is_recorded_on_the_result(monkeypatch, tmp_path, capl
         def translate_batch(self, *a, **k):
             raise _oom()
 
-    wav = tmp_path / "x.wav"; wav.write_bytes(b"")
+    wav = tmp_path / "x.wav"
+    wav.write_bytes(b"")
     monkeypatch.setattr(extractor, "extract_audio", lambda p: wav)
     monkeypatch.setattr(pl, "ensure_translation_model", lambda c, status=None: c)
     monkeypatch.setattr(factory, "get_engine", lambda key, cfg: _Broken())
@@ -182,7 +183,8 @@ def test_successful_translation_leaves_no_error(monkeypatch, tmp_path):
         def translate_batch(self, texts, s, t):
             return ["Hello."] * len(texts)
 
-    wav = tmp_path / "x.wav"; wav.write_bytes(b"")
+    wav = tmp_path / "x.wav"
+    wav.write_bytes(b"")
     monkeypatch.setattr(extractor, "extract_audio", lambda p: wav)
     monkeypatch.setattr(pl, "ensure_translation_model", lambda c, status=None: c)
     monkeypatch.setattr(factory, "get_engine", lambda key, cfg: _Ok())

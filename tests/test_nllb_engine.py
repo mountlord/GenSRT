@@ -24,7 +24,6 @@ import logging
 import pytest
 
 from gensrt.exceptions import TranslationError
-from gensrt.translation import nllb_ct2
 from gensrt.translation.nllb_ct2 import (
     DEFAULT_MODEL,
     ISO_TO_FLORES,

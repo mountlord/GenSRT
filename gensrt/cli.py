@@ -393,6 +393,41 @@ def _build_parser() -> argparse.ArgumentParser:
              "reading the source script.",
     )
     cfg.add_argument(
+        "--profile",
+        dest="profile",
+        default=None,
+        metavar="NAME",
+        help="Named default set applied on top of the config file: "
+             "'broadcast' (large-v3-turbo, VAD chunking, MADLAD) or "
+             "'soft-speech' (fixed windows, onset snap, MADLAD; kotoba-whisper "
+             "v2 for Japanese, large-v3-turbo otherwise).  Explicit flags "
+             "still win.  gensrt-profiles.json adds your own; --list-profiles "
+             "shows all.",
+    )
+    cfg.add_argument(
+        "--list-profiles",
+        dest="list_profiles",
+        action="store_true",
+        help="Print every profile with what it sets, then exit.",
+    )
+    cfg.add_argument(
+        "--init-profiles",
+        dest="init_profiles",
+        action="store_true",
+        help="Write the built-in gensrt-profiles.json next to the config "
+             "for editing, then exit.",
+    )
+    cfg.add_argument(
+        "--heuristics-mode",
+        dest="heuristics_mode",
+        default=None,
+        metavar="NAME",
+        help="Extra post-ASR rules for one kind of material, named after a "
+             "'modes' entry in gensrt-heuristics.json.  'soft-speech' drops "
+             "lone short cues, hallucinated laughter and repetition loops.  "
+             "The soft-speech profile sets this.",
+    )
+    cfg.add_argument(
         "--init-heuristics",
         dest="init_heuristics",
         action="store_true",
@@ -517,9 +552,18 @@ def _resolve_settings(args: argparse.Namespace) -> dict:
     """
     from gensrt.config import load_config, merge_config
 
+    from gensrt.profiles import apply_profile, choose_model
+
     file_config = load_config(args.config, strict=True)
-    cli_dict = vars(args)
-    return merge_config(file_config, cli_dict)
+    cli_dict = dict(vars(args))
+    # The profile sits between the file and the flags: --profile (or the
+    # file's own "profile" key) overlays the file, and explicit flags win.
+    name = cli_dict.pop("profile", None) or file_config.get("profile")
+    file_config, prof = apply_profile(file_config, name)
+    merged = merge_config(file_config, cli_dict)
+    merged = choose_model(merged, prof, explicit_model=cli_dict.get("model") is not None)
+    merged["profile"] = name or ""
+    return merged
 
 
 def _dump_resolved_config(merged: dict) -> None:
@@ -560,7 +604,7 @@ def _make_tqdm_progress():
         return _progress, []
 
 
-def _print_banner(config: TranscriptionConfig) -> None:
+def _print_banner(config: TranscriptionConfig, profile: str = "") -> None:
     """Print the run banner from the RESOLVED config.
 
     Must be handed the TranscriptionConfig that came out of
@@ -573,6 +617,8 @@ def _print_banner(config: TranscriptionConfig) -> None:
     print("", file=sys.stderr)
     print("═" * 60, file=sys.stderr)
     print("  GenSRT", file=sys.stderr)
+    if profile:
+        print(f"  Profile: {profile}", file=sys.stderr)
     print(f"  Model  : {config.model}", file=sys.stderr)
     print(f"  Device : {config.device} ({config.backend})", file=sys.stderr)
     print(f"  Compute: {config.compute_type}", file=sys.stderr)
@@ -610,7 +656,7 @@ def _run_headless(args: argparse.Namespace) -> int:
 
     # Build config (auto-detect GPU)
     config = build_transcription_config(merged, auto_detect_backend=True)
-    _print_banner(config)
+    _print_banner(config, str(merged.get("profile") or ""))
 
     # Collect input files
     all_inputs: list[Path] = list(args.inputs or [])
@@ -827,6 +873,22 @@ def main(argv: list[str] | None = None) -> None:
 
     # Early logging setup (before config is fully resolved)
     setup_logging(_resolve_log_level(args))
+
+    if getattr(args, "init_profiles", False):
+        from gensrt.profiles import write_default_profiles
+        path = write_default_profiles()
+        print(f"Default profiles written: {path}", file=sys.stderr)
+        sys.exit(0)
+
+    if getattr(args, "list_profiles", False):
+        from gensrt.exceptions import ConfigError
+        from gensrt.profiles import describe, load_profiles
+        try:
+            print(describe(load_profiles()))
+        except ConfigError as exc:
+            logger.error("%s", exc)
+            sys.exit(2)
+        sys.exit(0)
 
     if getattr(args, "init_heuristics", False):
         from gensrt.heuristics import write_default_heuristics

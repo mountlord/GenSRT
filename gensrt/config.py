@@ -57,6 +57,14 @@ _STATIC_DEFAULTS: dict[str, Any] = {
     "output_filename": None,
     "recurse": False,
     "log_level": "INFO",
+    # The TS→MP4 rewraps the review player makes (gensrt/remux.py) are the
+    # size of the recordings.  A file typically goes through GenSRT once,
+    # so the cache is deleted when the window closes; someone who reviews
+    # the same recording across sessions flips this to keep it (20 GB cap).
+    "remux_cache_keep": False,
+    # Name of a profile (gensrt/profiles.py) applied on top of this file for
+    # every run unless --profile says otherwise.  Empty: none.
+    "profile": "",
 }
 
 

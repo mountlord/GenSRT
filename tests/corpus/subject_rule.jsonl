@@ -1,0 +1,44 @@
+{"lang": "ja", "source": "ごめん", "mt": "I'm sorry.", "expect": "Sorry.", "note": "canonical pro-drop apology"}
+{"lang": "ja", "source": "気持ちいい", "mt": "It feels good.", "expect": "Feels good.", "note": "vocalised real word"}
+{"lang": "ja", "source": "早くしていきますよ", "mt": "I'm going to make it faster.", "expect": "Going to make it faster.", "note": "polite volitional, no subject"}
+{"lang": "ja", "source": "行きます", "mt": "I'm going.", "expect": "Going.", "note": ""}
+{"lang": "ja", "source": "大丈夫です", "mt": "It's fine.", "expect": "Fine.", "note": "'s clitic"}
+{"lang": "ja", "source": "疲れた", "mt": "I'm tired.", "expect": "Tired.", "note": ""}
+{"lang": "ja", "source": "嬉しい", "mt": "I'm happy.", "expect": "Happy.", "note": ""}
+{"lang": "ja", "source": "見えない", "mt": "I can't see it.", "expect": "Can't see it.", "note": "negated auxiliaries are stripped on purpose: \"Can't see it.\" reads as English where \"Can rest assured.\" does not (test_heuristics: 'negative is fine')"}
+{"lang": "ja", "source": "食べたい", "mt": "I want to eat.", "expect": "Want to eat.", "note": ""}
+{"lang": "ja", "source": "来た", "mt": "You came.", "expect": "Came.", "note": ""}
+{"lang": "ja", "source": "すごく大きいね", "mt": "It's a huge one.", "expect": "A huge one.", "note": "article after clitic"}
+{"lang": "ja", "source": "&apos;-entity case: ごめん", "mt": "I&apos;m sorry.", "expect": "Sorry.", "note": "NLLB HTML entity clitic handled as one token"}
+{"lang": "ja", "source": "curly case: ごめん", "mt": "I’m sorry.", "expect": "Sorry.", "note": "curly apostrophe"}
+{"lang": "ja", "source": "行くよ", "mt": "\"I'm going!\"", "expect": "\"Going!\"", "note": "leading quote preserved"}
+{"lang": "ja", "source": "帰ります", "mt": "We're going home.", "expect": "Going home.", "note": "we → stripped"}
+{"lang": "ja", "source": "私は何も知りません", "mt": "I don't know anything.", "expect": null, "note": "私 names the subject"}
+{"lang": "ja", "source": "僕が行く", "mt": "I'll go.", "expect": null, "note": "僕; and 'll is never touched"}
+{"lang": "ja", "source": "あなたは誰", "mt": "You are who?", "expect": null, "note": "あなた"}
+{"lang": "ja", "source": "彼は伝説だ", "mt": "He's a legend.", "expect": null, "note": "3rd person is not in en_strip and 彼 is explicit"}
+{"lang": "ja", "source": "安心して", "mt": "You can rest assured.", "expect": null, "note": "modal next: 'Can rest assured' (guard added 2026-09-27)"}
+{"lang": "ja", "source": "ね、こんな風に", "mt": "You know, like this.", "expect": null, "note": "stative 'know' (guard 2026-09-27)"}
+{"lang": "ja", "source": "少し知ってる", "mt": "I know a little.", "expect": null, "note": "stative 'know'"}
+{"lang": "ja", "source": "ほら", "mt": "You see,", "expect": null, "note": "discourse 'see'"}
+{"lang": "ja", "source": "レナ・コタマ、22歳", "mt": "I'm Lena Kotama, 22.", "expect": null, "note": "capitalised name next (guard 2026-09-28)"}
+{"lang": "ja", "source": "22歳", "mt": "I'm 22.", "expect": null, "note": "digit next"}
+{"lang": "ja", "source": "日本人です", "mt": "I'm Japanese.", "expect": null, "note": "nationality is capitalised"}
+{"lang": "ja", "source": "やった", "mt": "You did it!", "expect": null, "note": "bare auxiliary 'did'"}
+{"lang": "ja", "source": "そうだ", "mt": "It is.", "expect": null, "note": "bare 'is' — nothing would remain"}
+{"lang": "ja", "source": "行く", "mt": "I'll go.", "expect": null, "note": "'ll is not stripped: 'Go.' loses the future"}
+{"lang": "ja", "source": "行った", "mt": "I've gone.", "expect": null, "note": "'ve untouched"}
+{"lang": "ja", "source": "行くだろう", "mt": "I'd go.", "expect": null, "note": "'d untouched"}
+{"lang": "ja", "source": "伝説だ", "mt": "He's a legend.", "expect": null, "note": "third person never stripped (removed from list 2026-09-28)"}
+{"lang": "ja", "source": "彼女は来る", "mt": "She's coming.", "expect": null, "note": "third person"}
+{"lang": "ja", "source": "来る", "mt": "They're coming.", "expect": null, "note": "'they' not in en_strip"}
+{"lang": "ja", "source": "ごめん", "mt": "ごめん", "expect": null, "note": "untranslated line (text == source) is left alone"}
+{"lang": "ja", "source": "", "mt": "I'm sorry.", "expect": null, "note": "empty source: nothing to judge"}
+{"lang": "ja", "source": "行くよ", "mt": "I", "expect": null, "note": "pronoun alone: nothing would remain"}
+{"lang": "ja", "source": "行くよ", "mt": "I, um, go.", "expect": "Um, go.", "note": "comma after the pronoun is consumed; remainder capitalised"}
+{"lang": "ko", "source": "미안해", "mt": "I'm sorry.", "expect": "Sorry.", "note": "ko has a subject section; no explicit subject in the source"}
+{"lang": "ml", "source": "ക്ഷമിക്കണം", "mt": "I'm sorry.", "expect": "Sorry.", "note": "ml section enabled"}
+{"lang": "ml", "source": "ഞാൻ പോകുന്നു", "mt": "I'm going.", "expect": null, "note": "ഞാൻ explicit"}
+{"lang": "ko", "source": "내가 미안해", "mt": "I'm sorry.", "expect": null, "note": "내가 is explicit"}
+{"lang": "ja", "source": "やってない", "mt": "I didn't do it.", "expect": "Didn't do it.", "note": "negated auxiliary: stripped, same rule as can't"}
+{"lang": "ja", "source": "知らない", "mt": "I don't know.", "expect": "Don't know.", "note": "don't + know: the negation makes it an English ellipsis, so the stative guard does not apply"}

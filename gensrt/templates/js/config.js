@@ -72,6 +72,14 @@ const configSchema = {
             'stamped it at the start of its window (Whisper does this for ' +
             'lone short utterances, putting the cue 2-4 s early).',
     },
+    'heuristics_mode': {
+      type: 'select',
+      options: ['', 'soft-speech'],
+      hint: 'Extra post-ASR rules for one kind of material (a "modes" entry ' +
+            'in gensrt-heuristics.json).  soft-speech: drop lone short cues, ' +
+            'hallucinated laughter and repetition loops \u2014 for files where ' +
+            'the decoder turns breathing into words.  Empty: language rules only.',
+    },
     'max_chunk_s': {
       type: 'number', min: 1, max: 30, step: 0.5,
       hint: 'Chunked inference: longest allowed chunk (seconds).  6 suits ' +
@@ -180,6 +188,20 @@ const configSchema = {
       options: ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
       hint: 'Logging verbosity.',
     },
+    'profile': {
+      type: 'select-dynamic',
+      source: 'profiles',
+      hint: 'Default profile applied on top of this file for every run ' +
+            '(built-in: broadcast, soft-speech; gensrt-profiles.json adds ' +
+            'more).  "(none)": plain config.',
+    },
+    'remux_cache_keep': {
+      type: 'checkbox',
+      hint: 'Keep the MP4 rewraps of transport-stream (.ts) recordings ' +
+            'between sessions (in the temp folder, 20 GB cap, oldest ' +
+            'evicted).  Off: the cache is deleted when the window closes ' +
+            '\u2014 use Save MP4 to keep one.',
+    },
   },
 };
 
@@ -272,6 +294,56 @@ function renderConfigEditor(config) {
             _openAddModelModal();
           }
         });
+      } else if (fieldDef.type === 'select-dynamic' && fieldDef.source === 'profiles') {
+        // Profiles from /api/profiles (fetched when the editor opens).  The
+        // empty option is "no profile"; a saved name that no longer exists
+        // is kept as an option so Save does not silently drop it.
+        input             = document.createElement('select');
+        input.className   = 'config-field-input';
+        input.dataset.key = fieldKey;
+        const none        = document.createElement('option');
+        none.value        = '';
+        none.textContent  = '(none)';
+        input.appendChild(none);
+        const saved = fieldValue ? String(fieldValue) : '';
+        let found = false;
+        const byName = {};
+        for (const p of (window.__gensrtProfiles || [])) {
+          byName[p.name]   = p;
+          const opt        = document.createElement('option');
+          opt.value        = p.name;
+          opt.textContent  = p.name;                      // the name, nothing else
+          if (p.name === saved) { opt.selected = true; found = true; }
+          input.appendChild(opt);
+        }
+        if (saved && !found) {
+          const opt        = document.createElement('option');
+          opt.value        = saved;
+          opt.textContent  = saved + ' (not found)';
+          opt.selected     = true;
+          input.insertBefore(opt, input.firstChild.nextSibling);
+        }
+        // The description and what the profile sets go in the hint under
+        // the field, for the CURRENT selection — not into the option text.
+        const describe = () => {
+          const hintEl = label.querySelector('.hint');
+          if (!hintEl) return;
+          const p = byName[input.value];
+          if (!p) { hintEl.textContent = fieldDef.hint; return; }
+          const sets = Object.entries(p.settings || {}).map(([k, v]) => `${k}=${v}`);
+          for (const [lang, model] of Object.entries(p.model_by_language || {})) {
+            sets.push(`model for ${lang}: ${model}`);
+          }
+          hintEl.textContent = `${p.description}  Sets: ${sets.join(', ')}.`;
+        };
+        input.addEventListener('change', describe);
+        setTimeout(describe, 0);                          // after the label is in the DOM
+      } else if (fieldDef.type === 'text') {
+        input             = document.createElement('input');
+        input.type        = 'text';
+        input.className   = 'config-field-input';
+        input.value       = fieldValue !== null && fieldValue !== undefined ? String(fieldValue) : '';
+        input.dataset.key = fieldKey;
       } else if (fieldDef.type === 'select') {
         input             = document.createElement('select');
         input.className   = 'config-field-input';
@@ -474,8 +546,19 @@ async function saveConfigToServer() {
   }
 }
 
+window.__gensrtProfiles = [];
+async function _fetchProfiles() {
+  try {
+    const r = await fetch('/api/profiles');
+    const body = await r.json();
+    window.__gensrtProfiles = Array.isArray(body.profiles) ? body.profiles : [];
+    if (body.error) console.warn('gensrt-profiles.json:', body.error);
+  } catch (e) { console.warn('profiles fetch failed:', e); }
+}
+
 configBtn.addEventListener('click', async () => {
   try {
+    await _fetchProfiles();
     const response = await fetch('/api/config', { method: 'GET' });
     const result   = await response.json();
     if (result.status === 'success') {

@@ -26,6 +26,7 @@ from werkzeug.serving import WSGIRequestHandler
 
 from gensrt.api import register as _register_routes
 from gensrt.constants import SERVER_HOST, SERVER_PORT_RANGE
+from gensrt.operations import read_config_file
 
 logger = logging.getLogger(__name__)
 
@@ -454,9 +455,19 @@ def launch_server(
     webview.start(debug=console)
 
     # The window is closed.  A transport-stream rewrap still running would
-    # outlive the process as an orphaned ffmpeg writing into the cache.
+    # outlive the process as an orphaned ffmpeg writing into the cache, and
+    # the cache itself is the size of the recordings: gone unless the user
+    # asked to keep it (remux_cache_keep).
     from gensrt.remux import manager as _remux_manager
     _remux_manager.cancel_all()
+    try:
+        keep = bool(read_config_file(default_if_missing=True).get("remux_cache_keep", False))
+    except Exception:
+        keep = False
+    if keep:
+        logger.info("Remux cache kept (remux_cache_keep=true): %s", _remux_manager.directory)
+    else:
+        _remux_manager.clear()
 
 
 if __name__ == "__main__":

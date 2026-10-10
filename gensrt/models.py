@@ -283,6 +283,11 @@ class TranscriptionConfig:
     # translations) is written to this directory as <audio stem>.heuristics.txt
     # and .json — the same report --heuristics-report prints, all rows.
     heuristics_report_dir: str = ""
+    # Extra post-ASR rules for one kind of material, named after a "modes"
+    # entry in a language section of gensrt-heuristics.json ("soft-speech":
+    # isolated-cue, laughter and repetition-loop rules plus stricter lists).
+    # Empty: the language section alone.  The soft-speech profile sets it.
+    heuristics_mode: str = ""
 
     # Translation
     # "nllb" (offline, CC-BY-NC-4.0 weights — non-commercial only) or

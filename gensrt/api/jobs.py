@@ -158,6 +158,7 @@ def api_operation_status():
         "status": "active",
         "operation": {
             "kind":    "transcribe",   # only one job type today
+            "filename": snap.get("filename"),
             "message": snap.get("message", "Working..."),
             "current": current,
             "total":   total,
@@ -181,6 +182,7 @@ def api_transcribe():
             "no_translate":       false,                  // optional
             "no_vad":             false,                  // optional
             "model":              "large-v3-turbo",       // optional
+            "profile":            "broadcast",            // optional
         }
     """
     body: dict[str, Any] = request.get_json(silent=True) or {}
@@ -220,7 +222,16 @@ def api_transcribe():
     if "model" in body:
         overrides["model"] = body["model"]
 
-    merged = {**file_cfg, **overrides}
+    # A profile (body, else the config file's default) sits between the
+    # file and this request's overrides, as on the command line.
+    from gensrt.exceptions import ConfigError
+    from gensrt.profiles import apply_profile, choose_model
+    try:
+        file_cfg, prof = apply_profile(file_cfg, body.get("profile") or file_cfg.get("profile"))
+    except ConfigError as exc:
+        return jsonify({"status": "error", "message": str(exc)}), 400
+
+    merged = choose_model({**file_cfg, **overrides}, prof, explicit_model="model" in body)
     config = build_transcription_config(merged, auto_detect_backend=True)
 
     # Resolved here (after config) so the language suffix uses the real target.
