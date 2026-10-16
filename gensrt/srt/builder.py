@@ -330,6 +330,34 @@ def write_srt(subtitles: list, output_path: Path) -> None:
         raise OutputError(f"Cannot write SRT file {output_path}: {exc}") from exc
 
 
+def write_outputs(subtitles: list, srt_path: Path, formats: str = "srt") -> list[Path]:
+    """Write *subtitles* as SRT, VTT or both, named from *srt_path*.
+
+    ``formats`` is ``"srt"`` (default), ``"vtt"`` or ``"both"``; anything
+    else is treated as ``"srt"`` with a warning.  Returns the paths
+    written, SRT first.  A VTT failure never fails the SRT.
+    """
+    fmt = (formats or "srt").strip().lower()
+    if fmt not in ("srt", "vtt", "both"):
+        logger.warning("subtitle_formats=%r is not srt/vtt/both — writing srt.", formats)
+        fmt = "srt"
+    srt_path = Path(srt_path)
+    written: list[Path] = []
+    if fmt in ("srt", "both"):
+        write_srt(subtitles, srt_path)
+        written.append(srt_path)
+    if fmt in ("vtt", "both"):
+        vtt_path = srt_path.with_suffix(".vtt")
+        try:
+            write_vtt(subtitles, vtt_path)
+            written.append(vtt_path)
+        except Exception as exc:
+            if fmt == "vtt":
+                raise
+            logger.warning("VTT write failed (%s) — SRT saved OK.", exc)
+    return written
+
+
 def _fmt_vtt_time(td: datetime.timedelta) -> str:
     """Format a timedelta as a WebVTT timestamp (``HH:MM:SS.mmm``).
 

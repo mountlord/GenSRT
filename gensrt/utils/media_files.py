@@ -109,3 +109,21 @@ def resolve_output_path(
     if lang and lang != "en":
         return Path(target_dir) / f"{stem}.{lang}.srt"
     return Path(target_dir) / f"{stem}.srt"
+
+
+def source_output_path(output_path: Path, source_language: str) -> Path:
+    """Where the source-language subtitles go, next to the translated file.
+
+    ``movie.srt`` → ``movie.ja.srt``; ``movie.ko.srt`` (a non-English
+    target) → ``movie.ja.srt``; an explicit ``--output-filename`` such as
+    ``run7.srt`` → ``run7.ja.srt``.  A trailing 2-3 letter language tag on
+    the stem is replaced, anything else is kept whole.
+    """
+    import re
+
+    lang = (source_language or "").strip().lower()
+    stem = output_path.stem
+    m = re.match(r"^(.*)\.([a-z]{2,3})$", stem)
+    base = m.group(1) if m else stem
+    return output_path.with_name(f"{base}.{lang}{output_path.suffix}")
+

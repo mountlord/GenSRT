@@ -340,6 +340,8 @@ class MADLADCT2Engine(TranslationEngine):
             gc.collect()
             self._translator = ctranslate2.Translator(str(model_dir), device="cpu", compute_type="int8")
             logger.info("MADLAD translator reloaded: %s (device=cpu, compute=int8)", model_dir.name)
+            from gensrt import runfacts
+            runfacts.note(translate_device="cpu", translate_compute="int8")
 
     # -- Loading ----------------------------------------------------------
 
@@ -367,6 +369,12 @@ class MADLADCT2Engine(TranslationEngine):
 
             # Same ladder as NLLB, including the cuda/int8 rung for pre-Volta
             # cards (Tesla P4, GTX 10-series) that cannot run int8_float16.
+            if device != "cpu":
+                # Weights larger than the free VRAM cannot fit; say so once
+                # instead of walking the OOM ladder to the same place.
+                from gensrt.translation._preflight import gpu_can_hold
+                if not gpu_can_hold(model_dir, "MADLAD"):
+                    device = "cpu"
             if device == "cpu":
                 attempts = [("cpu", "int8")]
             else:
@@ -404,6 +412,9 @@ class MADLADCT2Engine(TranslationEngine):
                     "MADLAD translator loaded: %s (device=%s, compute=%s)",
                     model_dir.name, dev, compute,
                 )
+                from gensrt import runfacts
+                runfacts.note(translate_device=dev, translate_compute=compute,
+                              translate_engine="madlad")
                 return
 
             raise TranslationError(

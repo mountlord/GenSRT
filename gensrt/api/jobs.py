@@ -227,11 +227,12 @@ def api_transcribe():
     from gensrt.exceptions import ConfigError
     from gensrt.profiles import apply_profile, choose_model
     try:
-        file_cfg, prof = apply_profile(file_cfg, body.get("profile") or file_cfg.get("profile"))
+        filled, rec = apply_profile(file_cfg, body.get("profile") or file_cfg.get("profile"))
     except ConfigError as exc:
         return jsonify({"status": "error", "message": str(exc)}), 400
 
-    merged = choose_model({**file_cfg, **overrides}, prof, explicit_model="model" in body)
+    merged = choose_model({**filled, **overrides}, rec.profile, explicit_model="model" in body,
+                          file_config=file_cfg)
     config = build_transcription_config(merged, auto_detect_backend=True)
 
     # Resolved here (after config) so the language suffix uses the real target.

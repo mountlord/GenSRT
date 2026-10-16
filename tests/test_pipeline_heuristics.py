@@ -45,6 +45,9 @@ def stubbed(monkeypatch, tmp_path):
     monkeypatch.setattr(extractor, "extract_audio", lambda p: wav)
     monkeypatch.setattr(pl, "ensure_translation_model", lambda c, status=None: c)
     monkeypatch.setattr(factory, "get_engine", lambda key, cfg: _Engine())
+    # get_shared_engine caches per process; a stub left behind here would
+    # translate for the next test file.
+    factory.clear_shared_engines()
 
     # ASR output: 5 dense ごめん, an explicit-subject line, content, dialogue
     raw = [_seg(i, 2.0 * i, 2.0 * i + 1, "ごめん") for i in range(1, 6)]
@@ -52,7 +55,8 @@ def stubbed(monkeypatch, tmp_path):
             _seg(8, 28, 30, "早くしていきますよ"), _seg(9, 32, 33, "ああ"),
             _seg(10, 40, 42, "何ですか?")]
     monkeypatch.setattr(pl, "_run_asr", lambda wav_path, config, status=None: (list(raw), "ja"))
-    return pl, raw, tmp_path
+    yield pl, raw, tmp_path
+    factory.clear_shared_engines()
 
 
 def _config(**kw):

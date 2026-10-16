@@ -9,7 +9,7 @@ automatically so the two never drift apart.
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, field, fields
 from enum import Enum, auto
 from pathlib import Path
 from typing import Any
@@ -289,6 +289,16 @@ class TranscriptionConfig:
     # Empty: the language section alone.  The soft-speech profile sets it.
     heuristics_mode: str = ""
 
+    # Output files.  subtitle_formats: "srt" (default), "vtt", or "both" —
+    # VTT is what browsers' <track> needs; every desktop player and the
+    # editor read SRT, so one file is the norm.  source_srt: also write
+    # the subtitles in the language that was transcribed, from the SAME
+    # cues the translation was made from, as <name>.<source>.srt beside the
+    # translated file — one transcription, two languages, aligned cue for
+    # cue.  Nothing extra is written when no translation happened.
+    subtitle_formats: str = "srt"
+    source_srt: bool = False
+
     # Translation
     # "nllb" (offline, CC-BY-NC-4.0 weights — non-commercial only) or
     # "madlad" (offline, Apache-2.0) or "none". Google GTX was removed in
@@ -353,6 +363,8 @@ class TranscriptionResult:
     #: must surface this: an untranslated file behind a warning line is how
     #: a Korean SRT went out as Korean on an 8 GB card.
     translation_error: str | None = None      # gensrt.heuristics.HeuristicsReport
+    #: Stage timings and devices (see gensrt.runfacts), for the batch footer.
+    facts: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {

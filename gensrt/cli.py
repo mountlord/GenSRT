@@ -214,6 +214,18 @@ def _build_parser() -> argparse.ArgumentParser:
         "apply.",
     )
     ext.add_argument(
+        "--translate-srt",
+        dest="translate_srt",
+        type=Path,
+        default=None,
+        metavar="FILE",
+        help="Translate an existing subtitle file with the configured engine; "
+             "no audio, no transcription, timings kept exactly.  Source "
+             "language from --source-language or the file's tag (movie.ja.srt).  "
+             "Output: <name>.srt for English, <name>.<lang>.srt otherwise, or "
+             "--output-filename.",
+    )
+    ext.add_argument(
         "--extract-subtitles",
         dest="extract_subtitles",
         action="store_true",
@@ -418,6 +430,23 @@ def _build_parser() -> argparse.ArgumentParser:
              "for editing, then exit.",
     )
     cfg.add_argument(
+        "--source-srt",
+        dest="source_srt",
+        action="store_const", const=True, default=None,
+        help="Also write the subtitles in the original language, as "
+             "<name>.<lang>.srt beside the translated file, from the same "
+             "transcription (cue for cue).",
+    )
+    cfg.add_argument(
+        "--formats",
+        dest="subtitle_formats",
+        choices=["srt", "vtt", "both"],
+        default=None,
+        metavar="{srt,vtt,both}",
+        help="Which subtitle files to write (default: srt).  vtt is what a "
+             "web page's <track> needs; every desktop player reads srt.",
+    )
+    cfg.add_argument(
         "--heuristics-mode",
         dest="heuristics_mode",
         default=None,
@@ -556,13 +585,15 @@ def _resolve_settings(args: argparse.Namespace) -> dict:
 
     file_config = load_config(args.config, strict=True)
     cli_dict = dict(vars(args))
-    # The profile sits between the file and the flags: --profile (or the
-    # file's own "profile" key) overlays the file, and explicit flags win.
+    # The profile fills in what the file leaves at the built-in default;
+    # values the user set in the file are kept; explicit flags win over both.
     name = cli_dict.pop("profile", None) or file_config.get("profile")
-    file_config, prof = apply_profile(file_config, name)
-    merged = merge_config(file_config, cli_dict)
-    merged = choose_model(merged, prof, explicit_model=cli_dict.get("model") is not None)
+    filled, rec = apply_profile(file_config, name)
+    merged = merge_config(filled, cli_dict)
+    merged = choose_model(merged, rec.profile, explicit_model=cli_dict.get("model") is not None,
+                          file_config=file_config)
     merged["profile"] = name or ""
+    merged["_profile_note"] = rec.summary()
     return merged
 
 
@@ -604,7 +635,7 @@ def _make_tqdm_progress():
         return _progress, []
 
 
-def _print_banner(config: TranscriptionConfig, profile: str = "") -> None:
+def _print_banner(config: TranscriptionConfig, profile: str = "", profile_note: str = "") -> None:
     """Print the run banner from the RESOLVED config.
 
     Must be handed the TranscriptionConfig that came out of
@@ -619,6 +650,11 @@ def _print_banner(config: TranscriptionConfig, profile: str = "") -> None:
     print("  GenSRT", file=sys.stderr)
     if profile:
         print(f"  Profile: {profile}", file=sys.stderr)
+        # What the profile filled in and what it left alone, so a config
+        # edit that "did nothing" is explained on the first screen.
+        if profile_note:
+            for part in profile_note.split("; "):
+                print(f"           {part}", file=sys.stderr)
     print(f"  Model  : {config.model}", file=sys.stderr)
     print(f"  Device : {config.device} ({config.backend})", file=sys.stderr)
     print(f"  Compute: {config.compute_type}", file=sys.stderr)
@@ -656,7 +692,7 @@ def _run_headless(args: argparse.Namespace) -> int:
 
     # Build config (auto-detect GPU)
     config = build_transcription_config(merged, auto_detect_backend=True)
-    _print_banner(config, str(merged.get("profile") or ""))
+    _print_banner(config, str(merged.get("profile") or ""), str(merged.get("_profile_note") or ""))
 
     # Collect input files
     all_inputs: list[Path] = list(args.inputs or [])
@@ -726,6 +762,11 @@ def _run_headless(args: argparse.Namespace) -> int:
                 untranslated += 1
                 print(f"\n  ** NOT TRANSLATED: {media_path.name}\n     {result.translation_error}\n",
                       file=sys.stderr)
+            # Where each stage ran and how long it took — the line that
+            # names a CPU fallback or a slow network read after the fact.
+            summary = _facts_summary(result)
+            if summary:
+                print(f"  Summary: {summary}", file=sys.stderr)
             if getattr(args, "heuristics_report", False):
                 rep = getattr(result, "heuristics_report", None)
                 if rep is not None and rep.rows:
@@ -773,6 +814,51 @@ def _parse_region(text: str | None) -> tuple[int, int, int, int] | None:
     except ValueError:
         raise SystemExit(f"--region values must be numbers; got {text!r}")
     return (x, y, w, h)
+
+
+def _run_translate_srt(args) -> int:
+    """``--translate-srt FILE``: translate a subtitle file, no ASR."""
+    from gensrt.exceptions import ConfigError, ConfigParseError, GenSRTError
+    from gensrt.operations import build_transcription_config
+    from gensrt.pipeline import translate_srt
+
+    try:
+        merged = _resolve_settings(args)
+    except (ConfigParseError, ConfigError) as exc:
+        logger.error("%s", exc)
+        return 2
+    config = build_transcription_config(merged, auto_detect_backend=True)
+    _print_banner(config, str(merged.get("profile") or ""), str(merged.get("_profile_note") or ""))
+
+    srt_path = Path(args.translate_srt)
+    if not srt_path.is_file():
+        logger.error("Subtitle file not found: %s", srt_path)
+        return 1
+    out = srt_path.parent / args.output_filename if args.output_filename else None
+    try:
+        result = translate_srt(srt_path, config, output_path=out, status=_cli_status)
+    except (ConfigError, GenSRTError) as exc:
+        logger.error("%s", exc)
+        return 1
+    if result.translation_error:
+        print(f"  ** NOT TRANSLATED: {result.translation_error}", file=sys.stderr)
+        return 1
+    print(f"  Done ({result.elapsed_s:.1f}s) — {len(result.segments)} cues → {result.output_path.name}",
+          file=sys.stderr)
+    summary = _facts_summary(result)
+    if summary:
+        print(f"  Summary: {summary}", file=sys.stderr)
+    return 0
+
+
+def _facts_summary(result) -> str:
+    """Format ``result.facts`` as the one-line run summary; "" if none."""
+    from gensrt import runfacts
+
+    facts = getattr(result, "facts", None)
+    if not facts:
+        return ""
+    return runfacts.summary_line(facts)
 
 
 def _run_extract(args) -> int:
@@ -919,6 +1005,9 @@ def main(argv: list[str] | None = None) -> None:
 
     if getattr(args, "extract_subtitles", False):
         return _run_extract(args)
+
+    if getattr(args, "translate_srt", None):
+        sys.exit(_run_translate_srt(args))
 
     if args.dump_config:
         from gensrt.exceptions import ConfigError, ConfigParseError

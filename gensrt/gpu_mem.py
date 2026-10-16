@@ -31,6 +31,20 @@ def used_mib() -> int | None:
     return None
 
 
+def free_mib() -> int | None:
+    """Free MiB on GPU 0, or None if nvidia-smi is unavailable."""
+    try:
+        out = subprocess.run(
+            ["nvidia-smi", "--query-gpu=memory.free", "--format=csv,noheader,nounits", "-i", "0"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if out.returncode == 0:
+            return int(out.stdout.strip().splitlines()[0])
+    except Exception:
+        pass
+    return None
+
+
 def release(what: str, *objs) -> None:
     """Drop references, collect, and log what the card holds afterwards.
 
@@ -44,3 +58,6 @@ def release(what: str, *objs) -> None:
     used = used_mib()
     if used is not None:
         logger.info("GPU memory after releasing %s: %d MiB in use", what, used)
+        if what.startswith("Whisper"):
+            from gensrt import runfacts
+            runfacts.note(vram_after_asr_mib=used)

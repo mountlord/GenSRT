@@ -18,12 +18,20 @@ so that mistake is caught by the model/language guard before any work.
 What a profile is
 -----------------
 A name, a one-line description, and a dict of config keys — the same keys
-as ``gensrt-config.json``.  Precedence, lowest to highest:
+as ``gensrt-config.json``.  A profile FILLS IN, it does not overrule: a
+key it names is applied only when the config file still has the built-in
+default for it.  A value the user set in ``gensrt-config.json`` is kept,
+and the log says so (``kept from gensrt-config.json: …``).  Explicit
+flags beat both.  So:
 
-    built-in defaults  <  gensrt-config.json  <  profile  <  explicit flags
+    built-in defaults  <  profile  <  values set in gensrt-config.json  <  flags
 
-so ``--profile soft-speech --model large-v3`` still runs large-v3.  A
-profile never sets paths (output, report and dump directories are per
+(2026-10-07: a profile that set ``translation_engine`` silently undid the
+user's edit of that key in the config file, and an engine A/B never
+happened.  The engine is a property of the machine — VRAM, licence — not
+of the material, so no shipped profile names it any more either.)
+
+A profile never sets paths (output, report and dump directories are per
 run) and never sets the device.
 
 Two ship (``BUILTIN_PROFILES``); ``gensrt-profiles.json`` next to the
@@ -49,13 +57,12 @@ BUILTIN_PROFILES: dict[str, dict[str, Any]] = {
         "description": (
             "Studio and broadcast speech — news, live streams, interviews. "
             "Whisper large-v3-turbo with VAD chunking (fast; silence is not "
-            "decoded), MADLAD-400 translation. Any source language."
+            "decoded). Any source language."
         ),
         "settings": {
             "model": "large-v3-turbo",
             "asr_engine": "chunked",
             "chunk_mode": "vad",
-            "translation_engine": "madlad",
         },
     },
     "soft-speech": {
@@ -63,9 +70,9 @@ BUILTIN_PROFILES: dict[str, dict[str, Any]] = {
             "Soft speech and speech under other vocal sounds, any language. "
             "Fixed 5-8 s windows with no voice detector in front (recovers what "
             "VAD drops categorically; several times the decode time), cues "
-            "snapped to the audible onset, MADLAD-400 translation, and the "
-            "soft-speech heuristics (lone cues, laughter, repetition loops "
-            "removed) take out what the recall brings. Japanese runs on "
+            "snapped to the audible onset, and the soft-speech heuristics (lone "
+            "cues, laughter, repetition loops removed) take out what the recall "
+            "brings. Japanese runs on "
             "kotoba-whisper v2.0, everything else on large-v3-turbo."
         ),
         "settings": {
@@ -73,7 +80,6 @@ BUILTIN_PROFILES: dict[str, dict[str, Any]] = {
             "asr_engine": "chunked",
             "chunk_mode": "fixed",
             "snap_onsets": True,
-            "translation_engine": "madlad",
             "heuristics_mode": "soft-speech",
         },
         # Chosen AFTER the source language is known (flag > profile > file),
@@ -89,6 +95,8 @@ BUILTIN_PROFILES: dict[str, dict[str, Any]] = {
 _NOT_IN_PROFILE = frozenset({
     "output", "output_filename", "recurse", "log_level", "profile",
     "device", "backend", "gpu_id", "compute_type",
+    # Which translator fits is decided by VRAM and licence, per machine.
+    "translation_engine", "translation_model", "madlad_model",
     "debug_chunk_dir", "dump_segments_dir", "heuristics_report_dir",
     "remux_cache_keep",
 })
@@ -162,7 +170,8 @@ def _validate_settings(name: str, settings: Any, source: str) -> dict[str, Any]:
     if barred:
         raise ConfigError(
             f"Profile {name!r} ({source}) may not set {', '.join(barred)}: "
-            f"paths and device settings are per run, not per profile."
+            f"paths, the device and the translation engine are per machine or "
+            f"per run, not per profile — set them in gensrt-config.json."
         )
     return dict(settings)
 
@@ -216,31 +225,69 @@ def load_profiles(path: Path | None = None) -> Profiles:
     return profiles
 
 
-def apply_profile(file_config: dict[str, Any], name: str | None,
-                  profiles: Profiles | None = None) -> tuple[dict[str, Any], Profile | None]:
-    """Overlay the named profile on the config-file dict.
+@dataclass
+class Applied:
+    """What a profile did to the config-file dict, for the log and banner."""
+    profile: Profile | None = None
+    applied: dict[str, Any] = field(default_factory=dict)   # key → profile value used
+    kept: dict[str, Any] = field(default_factory=dict)      # key → file value kept
 
-    Returns the new dict and the profile used (``None`` when *name* is
-    empty).  Explicit CLI flags are merged on top by the caller, so the
-    precedence in the module docstring holds.
+    def summary(self) -> str:
+        if self.profile is None:
+            return ""
+        parts = [", ".join(f"{k}={v}" for k, v in self.applied.items()) or "(nothing to fill in)"]
+        if self.kept:
+            parts.append("kept from gensrt-config.json: " + ", ".join(
+                f"{k}={v} (profile has {self.profile.settings[k]})" for k, v in self.kept.items()))
+        return "; ".join(parts)
+
+
+def _is_user_set(file_config: dict[str, Any], key: str) -> bool:
+    """True when the config file holds a value for *key* that differs from
+    the built-in default — i.e. the user chose it."""
+    from gensrt.config import BUILTIN_DEFAULTS
+
+    if key not in file_config or file_config[key] is None:
+        return False
+    return file_config[key] != BUILTIN_DEFAULTS.get(key)
+
+
+def apply_profile(file_config: dict[str, Any], name: str | None,
+                  profiles: Profiles | None = None) -> tuple[dict[str, Any], Applied]:
+    """Fill the named profile's settings into the config-file dict.
+
+    A key the user set in the file (value differs from the built-in
+    default) is kept and reported; the rest take the profile's value.
+    Returns the new dict and an :class:`Applied` record.  Explicit CLI
+    flags are merged on top by the caller.
     """
     if not name or not str(name).strip():
-        return dict(file_config), None
+        return dict(file_config), Applied()
     prof = (profiles or load_profiles()).get(str(name))
-    merged = {**file_config, **prof.settings}
-    logger.info("Profile %r: %s", prof.name,
-                ", ".join(f"{k}={v}" for k, v in prof.settings.items()))
-    return merged, prof
+    merged = dict(file_config)
+    rec = Applied(profile=prof)
+    for key, value in prof.settings.items():
+        if _is_user_set(file_config, key):
+            rec.kept[key] = file_config[key]
+        else:
+            merged[key] = value
+            rec.applied[key] = value
+    logger.info("Profile %r: %s", prof.name, rec.summary())
+    return merged, rec
 
 
 def choose_model(merged: dict[str, Any], prof: Profile | None, *,
-                 explicit_model: bool) -> dict[str, Any]:
+                 explicit_model: bool, file_config: dict[str, Any] | None = None) -> dict[str, Any]:
     """Apply the profile's per-language model to the fully merged settings.
 
     Runs after flags are merged, so the language it reads is the effective
-    one.  An explicit ``--model`` (or request ``model``) always wins.
+    one.  An explicit ``--model`` (or request ``model``), or a model the
+    user set in the config file, always wins.
     """
     if prof is None or explicit_model:
+        return merged
+    if file_config is not None and _is_user_set(file_config, "model"):
+        logger.info("Profile %r: kept model=%s from gensrt-config.json", prof.name, merged.get("model"))
         return merged
     chosen = prof.model_for(merged.get("source_language"))
     if chosen and chosen != merged.get("model"):

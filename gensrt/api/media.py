@@ -29,6 +29,7 @@ from gensrt.api._paths import (
     _validate_save_path,
     _validate_srt_save_path,
 )
+from gensrt.operations import read_config_file
 
 logger = logging.getLogger(__name__)
 
@@ -238,17 +239,22 @@ def api_srt_save():
             logger.exception("SRT save failed")
             return jsonify({"status": "error", "message": str(exc)}), 500
 
-        # WebVTT companion — same cues, written next to the SRT.  Non-fatal:
-        # the SRT is the user's primary artifact; failing the whole save
-        # because of a derived-file glitch would be hostile.
+        # WebVTT companion only when the config asks for it (subtitle_formats
+        # vtt/both).  The editor always saves the SRT it loaded; the VTT is
+        # derived, and a failure there never fails the save.
         vtt_path = dest_path.with_suffix(".vtt")
         vtt_ok = False
         try:
-            from gensrt.srt.builder import write_vtt
-            write_vtt(subs, vtt_path)
-            vtt_ok = True
-        except Exception as exc:
-            logger.warning("VTT companion write failed (%s) — SRT saved OK.", exc)
+            formats = str(read_config_file(default_if_missing=True).get("subtitle_formats") or "srt")
+        except Exception:
+            formats = "srt"
+        if formats.lower() in ("vtt", "both"):
+            try:
+                from gensrt.srt.builder import write_vtt
+                write_vtt(subs, vtt_path)
+                vtt_ok = True
+            except Exception as exc:
+                logger.warning("VTT companion write failed (%s) — SRT saved OK.", exc)
 
     return jsonify({
         "status":   "ok",

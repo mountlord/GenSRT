@@ -213,6 +213,8 @@ def run_pipeline(
     logger.info("Processing: %s", input_path.name)
     logger.info("=" * 60)
 
+    from gensrt import runfacts
+    runfacts.start()
     t0 = time.perf_counter()
     wav_path: Path | None = None
 
@@ -222,7 +224,9 @@ def run_pipeline(
         progress(0, PIPELINE_PHASES)
 
         from gensrt.audio.extractor import extract_audio
+        t_phase = time.perf_counter()
         wav_path = extract_audio(input_path)
+        _log_extraction(input_path, time.perf_counter() - t_phase)
 
         # ── Phase 2: Transcription (engine selected by model name) ────────
         if config.vad_enabled:
@@ -240,11 +244,13 @@ def run_pipeline(
                 debug_chunk_dir=str(Path(config.debug_chunk_dir) / input_path.stem),
             )
 
+        t_phase = time.perf_counter()
         srt_segments, detected_language = _run_asr(
             wav_path=wav_path,
             config=asr_config,
             status=status,
         )
+        runfacts.timing("asr", time.perf_counter() - t_phase)
 
         logger.info("Using language: %s", detected_language)
 
@@ -293,12 +299,15 @@ def run_pipeline(
 
         source_texts = [seg.text for seg in srt_segments]   # positional pairing
         _TRANSLATION_FAILURE.clear()
+        t_phase = time.perf_counter()
         srt_segments = _maybe_translate(
             segments=srt_segments,
             detected_language=detected_language,
             config=config,
             should_translate=should_translate,
         )
+        if should_translate:
+            runfacts.timing("translate", time.perf_counter() - t_phase)
 
         # ── Phase 3b: post-translation heuristics ────────────────────────
         # Pro-drop source + English target: strip the subject the translator
@@ -328,9 +337,9 @@ def run_pipeline(
         from gensrt.srt.builder import (
             build_srt,
             summarize_segment_durations,
-            write_srt,
-            write_vtt,
+            write_outputs,
         )
+        from gensrt.utils.media_files import source_output_path
 
         # Log the model's OWN duration distribution before any capping,
         # flooring, or overlap clamping touches it.  Once build_srt has run,
@@ -343,23 +352,29 @@ def run_pipeline(
                 summarize_segment_durations(srt_segments),
             )
 
-        subtitles = build_srt(
-            srt_segments,
+        build_kw = dict(
             max_duration_s=config.max_subtitle_duration_s,
             min_duration_s=config.min_subtitle_duration_s,
             max_line_chars=config.max_line_chars,
             max_lines=config.max_lines,
         )
-        write_srt(subtitles, output_path)
+        formats = getattr(config, "subtitle_formats", "srt") or "srt"
+        subtitles = build_srt(srt_segments, **build_kw)
+        write_outputs(subtitles, output_path, formats)
 
-        # WebVTT companion — same cues, lands next to the SRT (movie.srt
-        # → movie.vtt, movie.ml.srt → movie.ml.vtt).  Non-fatal on failure:
-        # the SRT is what the user asked for, the VTT is a bonus that
-        # makes HTML5 / Jellyfin / browser playback work without a polyfill.
-        try:
-            write_vtt(subtitles, output_path.with_suffix(".vtt"))
-        except Exception as exc:
-            logger.warning("VTT companion write failed (%s) — SRT saved OK.", exc)
+        # Source-language subtitles from the SAME cues the translation was
+        # made from (post-heuristics, pre-translation), so the two files
+        # line up cue for cue.  Only meaningful when a translation happened;
+        # otherwise the file above already is the source language.
+        if getattr(config, "source_srt", False):
+            if should_translate and not translation_error:
+                src_segments = [replace(seg, text=txt) for seg, txt in zip(srt_segments, source_texts)]
+                src_path = source_output_path(output_path, detected_language)
+                write_outputs(build_srt(src_segments, **build_kw), src_path, formats)
+                logger.info("Source-language subtitles (%s): %s", detected_language, src_path.name)
+            else:
+                logger.info("source_srt: no translation was made, so %s already holds the "
+                            "source language; nothing extra written.", output_path.name)
 
         # Done — bar to 100%
         progress(PIPELINE_PHASES, PIPELINE_PHASES)
@@ -371,6 +386,7 @@ def run_pipeline(
             logger.debug("Temp WAV removed: %s", wav_path.name)
 
     elapsed = time.perf_counter() - t0
+    runfacts.timing("total", elapsed)
     logger.info(
         "Done: %s  →  %s  (%.1fs, %d segments, lang=%s)",
         input_path.name,
@@ -379,6 +395,12 @@ def run_pipeline(
         len(srt_segments),
         detected_language,
     )
+    # One line that says where each stage ran and how long it took — the
+    # line that would have named a CPU fallback or a slow network read
+    # without a monitor or a terminal that is still open.
+    summary = runfacts.summary_line()
+    if summary:
+        logger.info("Summary: %s", summary)
     status(f"Done ({elapsed:.1f}s) — {len(srt_segments)} subtitles written.")
 
     # The run report pairs the model's raw short strings with their
@@ -419,7 +441,33 @@ def run_pipeline(
         elapsed_s=elapsed,
         heuristics_report=report,
         translation_error=translation_error,
+        facts=runfacts.snapshot(),
     )
+
+
+def _log_extraction(input_path: Path, seconds: float) -> None:
+    """Say how long the audio read took and how fast the input was read.
+
+    A feature film on a local SSD extracts in well under a minute; the
+    same file on a network share can take an hour at a few MB/s with the
+    CPU at 3 % — which, with nothing on the console, looks like a hang.
+    """
+    from gensrt import runfacts
+
+    try:
+        size_mb = input_path.stat().st_size / (1024 * 1024)
+    except OSError:
+        size_mb = 0.0
+    rate = size_mb / seconds if seconds > 0 else 0.0
+    runfacts.timing("extract", seconds)
+    runfacts.note(extract_mb_s=round(rate, 1))
+    logger.info("Audio extracted in %.1fs (%.0f MB read at %.0f MB/s)", seconds, size_mb, rate)
+    if seconds > 60 and rate < 10:
+        logger.warning(
+            "Reading the input took %.0f s at %.1f MB/s — is it on a network "
+            "share or a slow disk?  Copy it to a local drive first for a faster run.",
+            seconds, rate,
+        )
 
 
 def _run_asr(
@@ -466,6 +514,144 @@ def _run_asr(
 _TRANSLATION_FAILURE: list[str] = []
 
 
+def read_srt_segments(path: Path) -> list[SRTSegment]:
+    """Load an SRT file as :class:`SRTSegment` cues (index, start, end, text)."""
+    import srt as srt_lib
+
+    text = Path(path).read_text(encoding="utf-8-sig")
+    subs = list(srt_lib.parse(text))
+    return [
+        SRTSegment(index=i + 1, start=s.start.total_seconds(), end=s.end.total_seconds(),
+                   text=s.content.replace("\n", " ").strip())
+        for i, s in enumerate(subs)
+    ]
+
+
+def language_from_subtitle_name(path: Path) -> str | None:
+    """``movie.ja.srt`` → ``"ja"``; ``movie.srt`` → ``None``."""
+    import re
+
+    m = re.match(r"^.*\.([a-z]{2,3})$", Path(path).stem.lower())
+    return m.group(1) if m else None
+
+
+def translate_srt(
+    srt_path: Path,
+    config: TranscriptionConfig,
+    *,
+    output_path: Path | None = None,
+    status: Callable[[str], None] | None = None,
+) -> TranscriptionResult:
+    """Translate an existing subtitle file — no audio, no ASR.
+
+    The cues keep their timings exactly; only the text changes.  This is
+    how two translation engines are compared honestly: one transcription,
+    two translations.  (Re-transcribing for an A/B is never clean —
+    CTranslate2 on CUDA is not bit-reproducible, and a dozen cues move
+    between runs.)  The post-translation subject rule applies as in a
+    full run; the pre-translation heuristics do not — the file is taken
+    as the user wants it.
+
+    The source language is ``config.source_language`` unless that is
+    ``auto``, in which case the file's language tag (``movie.ja.srt``)
+    is used; with neither it is a ConfigError.  The output name follows
+    the pipeline's convention from the stem without its language tag
+    (``movie.ja.srt`` → ``movie.srt`` for English, ``movie.ko.srt``
+    otherwise) unless *output_path* is given.
+    """
+    from gensrt.heuristics import load_heuristics, strip_subjects
+    from gensrt.srt.builder import build_srt, write_outputs
+
+    from gensrt import runfacts
+
+    status = status or (lambda _m: None)
+    srt_path = Path(srt_path)
+    t0 = time.perf_counter()
+    runfacts.start()
+
+    src = (config.source_language or "").strip().lower()
+    if not src or src == "auto":
+        src = language_from_subtitle_name(srt_path) or ""
+    if not src:
+        raise ConfigError(
+            f"Cannot tell the language of {srt_path.name}: name it <name>.<lang>.srt "
+            f"or pass --source-language."
+        )
+    tgt = (config.target_language or "en").strip().lower()
+    if src == tgt:
+        raise ConfigError(f"{srt_path.name} is already in the target language ({tgt}).")
+    if not config.translate or config.translation_engine == "none":
+        raise ConfigError("--translate-srt needs a translation engine (translation_engine is 'none').")
+
+    validate_translation_config(config)
+    config = ensure_translation_model(config, status=status)
+
+    segments = read_srt_segments(srt_path)
+    if not segments:
+        raise ConfigError(f"{srt_path.name} holds no cues.")
+    logger.info("Translating %s: %d cues, %s → %s via %s", srt_path.name, len(segments),
+                src, tgt, config.translation_engine)
+    status(f"Translating ({src} → {tgt}) via {config.translation_engine}…")
+
+    source_texts = [s.text for s in segments]
+    _TRANSLATION_FAILURE.clear()
+    t_phase = time.perf_counter()
+    translated = _maybe_translate(segments, src, config, True)
+    runfacts.timing("translate", time.perf_counter() - t_phase)
+    translation_error = _TRANSLATION_FAILURE[0] if _TRANSLATION_FAILURE else None
+
+    n_subj = 0
+    if not translation_error:
+        rules = load_heuristics().subject_for(src, tgt)
+        translated, n_subj, _ex = strip_subjects(source_texts, translated, rules)
+        if n_subj:
+            logger.info("Heuristics [subject/%s]: stripped the leading subject pronoun "
+                        "from %d line(s)", rules.language, n_subj)
+
+    if output_path is None:
+        # Same convention as a full run: English unsuffixed, others tagged.
+        tag = language_from_subtitle_name(srt_path)
+        stem = srt_path.stem[: -len(tag) - 1] if tag else srt_path.stem
+        output_path = srt_path.with_name(f"{stem}.srt" if tgt == "en" else f"{stem}.{tgt}.srt")
+    output_path = Path(output_path)
+
+    subtitles = build_srt(
+        translated,
+        max_duration_s=0,                 # the cues' timings are the user's; keep them
+        min_duration_s=0,
+        max_line_chars=config.max_line_chars,
+        max_lines=config.max_lines,
+    )
+    write_outputs(subtitles, output_path, getattr(config, "subtitle_formats", "srt") or "srt")
+
+    elapsed = time.perf_counter() - t0
+    runfacts.timing("total", elapsed)
+    logger.info("Done: %s  →  %s  (%.1fs, %d cues)", srt_path.name, output_path.name, elapsed,
+                len(translated))
+    summary = runfacts.summary_line()
+    if summary:
+        logger.info("Summary: %s", summary)
+    return TranscriptionResult(
+        input_path=srt_path, output_path=output_path, detected_language=src,
+        segments=translated, config=config, elapsed_s=elapsed,
+        translation_error=translation_error, facts=runfacts.snapshot(),
+    )
+
+
+def _note_translator(engine, engine_name: str) -> None:
+    """Record the device the translator actually ran on.  An engine loaded
+    for an earlier file in the batch never passes through its loader again,
+    so ask the CTranslate2 object itself."""
+    from gensrt import runfacts
+
+    tr = getattr(engine, "_translator", None)
+    dev = getattr(tr, "device", None)
+    facts = dict(translate_engine=engine_name)
+    if dev:
+        facts["translate_device"] = str(dev)
+    runfacts.note(**facts)
+
+
 def _maybe_translate(
     segments: list[SRTSegment],
     detected_language: str,
@@ -510,6 +696,7 @@ def _maybe_translate(
         _TRANSLATION_FAILURE.append(str(exc))
         translated_texts = texts
 
+    _note_translator(engine, config.translation_engine)
     return [
         # replace() rather than a fresh SRTSegment: translation changes only
         # the text, and rebuilding by hand silently dropped every diagnostic

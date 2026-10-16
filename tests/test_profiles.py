@@ -40,19 +40,29 @@ def test_user_file_adds_and_overrides_by_name(tmp_path):
     f = tmp_path / "gensrt-profiles.json"
     f.write_text(json.dumps({"profiles": {
         "Korean-Drama": {"description": "my set", "settings": {"model": "large-v3", "source_language": "ko"}},
-        "broadcast": {"settings": {"translation_engine": "nllb"}},
+        "broadcast": {"settings": {"chunk_mode": "fixed"}},
     }}), encoding="utf-8")
     ps = P.load_profiles(f)
     assert ps.names() == ["broadcast", "korean-drama", "soft-speech"]
     assert ps.get("korean-drama").settings == {"model": "large-v3", "source_language": "ko"}
     assert ps.get("KOREAN-DRAMA").source == str(f)
-    assert ps.get("broadcast").settings == {"translation_engine": "nllb"}   # replaced, not merged
+    assert ps.get("broadcast").settings == {"chunk_mode": "fixed"}   # replaced, not merged
+
+
+def test_no_shipped_profile_names_the_translation_engine():
+    """The engine is decided by VRAM and licence — per machine, in the
+    config file.  A profile that set it silently undid a config edit
+    (2026-10-07), so neither shipped profile may name it, and user
+    profiles are refused if they try."""
+    for name, d in P.BUILTIN_PROFILES.items():
+        assert "translation_engine" not in d["settings"], name
 
 
 @pytest.mark.parametrize("settings, needle", [
     ({"modle": "x"}, "modle"),                       # typo
-    ({"output": "D:/out"}, "per run"),               # a path
-    ({"device": "cuda"}, "per run"),                 # a machine setting
+    ({"output": "D:/out"}, "per machine"),           # a path
+    ({"device": "cuda"}, "per machine"),             # a machine setting
+    ({"translation_engine": "nllb"}, "translation engine"),
     ("large-v3", "must be an object"),
 ])
 def test_bad_profile_settings_are_errors_not_silence(tmp_path, settings, needle):
@@ -73,19 +83,28 @@ def test_malformed_profiles_file_is_an_error(tmp_path):
         P.load_profiles(f)
 
 
-def test_apply_profile_overlays_the_file_and_leaves_the_rest():
-    file_cfg = {"model": "medium", "vad_threshold": 0.4, "translation_engine": "nllb"}
-    out, prof = P.apply_profile(file_cfg, "broadcast")
-    assert prof.name == "broadcast"
-    assert out["model"] == "large-v3-turbo" and out["translation_engine"] == "madlad"
-    assert out["vad_threshold"] == 0.4                  # untouched
+def test_apply_profile_fills_defaults_and_keeps_what_the_user_set():
+    """A profile fills in; it never overrules a value set in the file."""
+    file_cfg = {"model": "medium", "chunk_mode": "vad", "vad_threshold": 0.4, "translation_engine": "nllb"}
+    out, rec = P.apply_profile(file_cfg, "soft-speech")
+    assert rec.profile.name == "soft-speech"
+    assert out["model"] == "medium"                      # user-set: kept
+    assert out["chunk_mode"] == "fixed"                  # file had the default: filled
+    assert out["snap_onsets"] is True                    # absent from file: filled
+    assert out["translation_engine"] == "nllb"           # profile does not name it
+    assert out["vad_threshold"] == 0.4                   # untouched
+    assert rec.kept == {"model": "medium"}
+    assert rec.applied == {"asr_engine": "chunked", "chunk_mode": "fixed", "snap_onsets": True,
+                           "heuristics_mode": "soft-speech"}
+    assert "kept from gensrt-config.json: model=medium" in rec.summary()
     assert file_cfg["model"] == "medium"                 # input not mutated
-    assert P.apply_profile(file_cfg, "") == (file_cfg, None)
-    assert P.apply_profile(file_cfg, None)[1] is None
+    out, rec = P.apply_profile(file_cfg, "")
+    assert out == file_cfg and rec.profile is None and rec.summary() == ""
+    assert P.apply_profile(file_cfg, None)[1].profile is None
 
 
-def test_precedence_defaults_file_profile_flags(tmp_path, monkeypatch):
-    """built-in < gensrt-config.json < profile < explicit flag."""
+def test_precedence_defaults_profile_file_flags(tmp_path, monkeypatch):
+    """built-in < profile < values set in gensrt-config.json < explicit flag."""
     from gensrt.cli import _build_parser, _resolve_settings
 
     cfg = tmp_path / "gensrt-config.json"
@@ -94,17 +113,39 @@ def test_precedence_defaults_file_profile_flags(tmp_path, monkeypatch):
 
     args = _build_parser().parse_args(["--config", str(cfg), "--profile", "soft-speech", "--model", "large-v3"])
     m = _resolve_settings(args)
-    assert m["model"] == "large-v3"             # flag beats profile
-    assert m["chunk_mode"] == "fixed"           # profile beats file
-    assert m["max_chunk_s"] == 8.0              # file beats default
+    assert m["model"] == "large-v3"             # flag beats everything
+    assert m["chunk_mode"] == "fixed"           # file had the default → profile fills it
+    assert m["max_chunk_s"] == 8.0              # file value, profile does not name it
     assert m["profile"] == "soft-speech"
 
+    # A model the user set in the file beats the profile and its
+    # per-language map; the note says so.
+    m = _resolve_settings(_build_parser().parse_args(["--config", str(cfg), "--profile", "soft-speech",
+                                                      "--source-language", "ja"]))
+    assert m["model"] == "medium" and "kept from gensrt-config.json: model=medium" in m["_profile_note"]
+
     # The config file can name a default profile; --profile overrides it.
-    cfg.write_text(json.dumps({"model": "medium", "profile": "soft-speech"}))
+    cfg.write_text(json.dumps({"profile": "soft-speech"}))
     m = _resolve_settings(_build_parser().parse_args(["--config", str(cfg)]))
     assert m["chunk_mode"] == "fixed" and m["profile"] == "soft-speech"
     m = _resolve_settings(_build_parser().parse_args(["--config", str(cfg), "--profile", "broadcast"]))
     assert m["chunk_mode"] == "vad" and m["model"] == "large-v3-turbo"
+
+
+def test_the_engine_in_the_config_file_is_what_runs(tmp_path):
+    """The 2026-10-07 case: the file says nllb, the file names the
+    soft-speech profile, the user expects nllb — and gets it."""
+    from gensrt.cli import _build_parser, _resolve_settings
+
+    cfg = tmp_path / "gensrt-config.json"
+    cfg.write_text(json.dumps({"profile": "soft-speech", "translation_engine": "nllb"}))
+    m = _resolve_settings(_build_parser().parse_args(["--config", str(cfg), "--source-language", "ja"]))
+    assert m["translation_engine"] == "nllb"
+    assert m["model"].startswith("kotoba-tech/") and m["chunk_mode"] == "fixed"
+    # and the explicit flag still wins over the file
+    m = _resolve_settings(_build_parser().parse_args(["--config", str(cfg), "--source-language", "ja",
+                                                      "--translation-engine", "madlad"]))
+    assert m["translation_engine"] == "madlad"
 
 
 def test_soft_speech_picks_the_model_from_the_language(tmp_path):
@@ -191,7 +232,7 @@ def test_api_transcribe_applies_a_profile(tmp_path, monkeypatch):
         seen["config"] = kw["config"]
         return R()
     monkeypatch.setattr(jobs, "run_transcription", fake_run)
-    monkeypatch.setattr(jobs, "read_config_file", lambda **kw: {"model": "medium"})
+    monkeypatch.setattr(jobs, "read_config_file", lambda **kw: {"vad_threshold": 0.4})
     app.config["TESTING"] = True
     c = app.test_client()
     r = c.post("/api/transcribe", json={"input_path": str(video), "profile": "broadcast", "no_translate": True})

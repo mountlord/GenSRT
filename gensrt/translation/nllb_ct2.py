@@ -435,6 +435,8 @@ class NLLBCT2Engine(TranslationEngine):
             gc.collect()
             self._translator = ctranslate2.Translator(str(model_dir), device="cpu", compute_type="int8")
             logger.info("NLLB translator reloaded: %s (device=cpu, compute=int8)", model_dir.name)
+            from gensrt import runfacts
+            runfacts.note(translate_device="cpu", translate_compute="int8")
 
     # -- Loading ----------------------------------------------------------
 
@@ -467,6 +469,12 @@ class NLLBCT2Engine(TranslationEngine):
             # CPU while a perfectly capable int8 GPU sat idle — logging a
             # misleading "GPU unavailable" on top.  Whisper's loader lands
             # on cuda/int8 for these cards; the translator now matches.
+            if device != "cpu":
+                # Weights larger than the free VRAM cannot fit; say so once
+                # instead of walking the OOM ladder to the same place.
+                from gensrt.translation._preflight import gpu_can_hold
+                if not gpu_can_hold(model_dir, "NLLB"):
+                    device = "cpu"
             if device == "cpu":
                 attempts = [("cpu", "int8")]
             else:
@@ -503,6 +511,9 @@ class NLLBCT2Engine(TranslationEngine):
                     "NLLB translator loaded: %s (device=%s, compute=%s)",
                     model_dir.name, dev, compute,
                 )
+                from gensrt import runfacts
+                runfacts.note(translate_device=dev, translate_compute=compute,
+                              translate_engine="nllb")
                 return
 
             raise TranslationError(

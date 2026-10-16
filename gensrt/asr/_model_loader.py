@@ -109,6 +109,12 @@ def _compute_type_ladder(device: str, requested: str) -> list[str]:
     return ladder
 
 
+def _note_asr(device: str, compute_type: str) -> None:
+    """Record where Whisper ended up, for the run summary."""
+    from gensrt import runfacts
+    runfacts.note(asr_device=device, asr_compute=compute_type)
+
+
 def load_whisper_model(
     wav_path: Path,
     config: TranscriptionConfig,
@@ -192,6 +198,7 @@ def load_whisper_model(
                             last_exc = exc2
                             failures.append((device, ct, exc2))
                             continue
+                        _note_asr(device, ct)
                         return model
                 continue
 
@@ -224,6 +231,7 @@ def load_whisper_model(
                     requested_ct, device, ct,
                 )
 
+            _note_asr(device, ct)
             return model
 
     detail = (

@@ -183,6 +183,19 @@ const configSchema = {
       type: 'folder',
       hint: 'Default output directory.  Leave empty to write the SRT next to the source video.',
     },
+    'subtitle_formats': {
+      type: 'select',
+      options: ['srt', 'vtt', 'both'],
+      hint: 'Which subtitle files to write.  srt: every player and the ' +
+            'editor read it.  vtt: what a web page\u2019s <track> needs.  ' +
+            'both: one of each, same cues.',
+    },
+    'source_srt': {
+      type: 'checkbox',
+      hint: 'Also write the subtitles in the original language ' +
+            '(<name>.<lang>.srt beside the translated file), from the same ' +
+            'transcription, cue for cue.',
+    },
     'log_level': {
       type: 'select',
       options: ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],

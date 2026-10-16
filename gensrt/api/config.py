@@ -164,6 +164,8 @@ _CONFIG_VALIDATORS = {
     "dump_segments_dir":       _v_str,
     "heuristics_report_dir":   _v_str,
     "heuristics_mode":         _v_str_or_null,
+    "subtitle_formats":        _v_str_in({"srt", "vtt", "both"}),
+    "source_srt":              _v_bool,
 }
 
 
